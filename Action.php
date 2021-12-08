@@ -33,7 +33,7 @@ class GAuthenticator_Action extends Typecho_Widget implements Widget_Interface_D
 			}else{
 				Typecho_Widget::widget('Widget_Notice')->set(_t('两步验证失败'), 'error');
 			}
-			Typecho_Response::redirect($referer);
+			$this->redirect;
 		}
 	}
 
