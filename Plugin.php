@@ -4,9 +4,9 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
  * Google Authenticator for Typecho
  *
  * @package GAuthenticator
- * @author WeiCN
- * @version 0.0.6
- * @link https://cuojue.org/read/Typecho_Google_Authenticator_02.html
+ * @author Vndroid
+ * @version 0.0.7
+ * @link https://github.com/Vndroid/GAuthenticator
  */
 class GAuthenticator_Plugin implements Typecho_Plugin_Interface
 {
