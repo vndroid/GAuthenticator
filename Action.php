@@ -43,4 +43,4 @@ class GAuthenticator_Action extends Typecho_Widget implements Widget_Interface_D
 		$this->on($this->request->is('otp'))->auth();
 	}
 }
-?>
+
