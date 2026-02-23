@@ -17,8 +17,8 @@ include 'header.php';
         <form action="<?= $url ?>" method="post" name="login" role="form">
             <p>
                 <label for="otp" class="sr-only"><?php _e('两步验证密码'); ?></label>
-                <input type="text" autofocus="autofocus" id="otp" name="otp" class="text-l w-100"
-                       autocomplete="new-field" placeholder="<?php _e('两步验证密码'); ?>"/>
+                <input type="text" autofocus="autofocus" id="otp" name="otp" class="text-l w-100" inputmode="numeric"
+                       maxlength="6" autocomplete="new-field" oninput="this.value = this.value.replace(/[^0-9]/g, '')" placeholder="<?php _e('两步验证密码'); ?>"/>
             </p>
             <p class="submit">
                 <button type="submit" class="btn btn-l w-100 primary"><?php _e('登录'); ?></button>
