@@ -46,7 +46,7 @@ class GAuthenticator_Plugin implements Typecho_Plugin_Interface
      *
      * @access public
      * @param Typecho_Widget_Helper_Form $form 配置面板
-     * @return void'
+     * @return void
      */
     public static function config(Typecho_Widget_Helper_Form $form)
     {
