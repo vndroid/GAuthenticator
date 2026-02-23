@@ -14,17 +14,45 @@ class GAuthenticator_Action extends Typecho_Widget implements Widget_Interface_D
 		parent::__construct($request, $response, $params);
 	}
 	/**
+	 * OTP ajax/json response helper
+	 * @param bool $ok
+	 * @param string $message
+	 * @param string $redirect
+	 */
+	private function jsonResult($ok, $message = '', $redirect = '')
+	{
+		// try our best to return JSON without depending on Typecho namespaces
+		header('Content-Type: application/json; charset=UTF-8');
+		echo json_encode([
+			'ok' => (bool)$ok,
+			'message' => (string)$message,
+			'redirect' => (string)$redirect
+		]);
+	}
+
+	/**
 	 * 验证GAuthenticator POST
 	 * 
 	 */
 	public function auth(){
 		$otp = $this->request->get('otp');
+		$isAjax = (
+			$this->request->isAjax()
+			|| 'XMLHttpRequest' === (string)$this->request->getHeader('X-Requested-With')
+		);
+
 		if (intval($otp) <= 0) {
+			if ($isAjax) {
+				$this->jsonResult(false, _t('请输入令牌'), '');
+			}
 			return;
 		}
 
 		//获取到CODE
 		if (isset($_SESSION['GAuthenticator']) && $_SESSION['GAuthenticator']) {
+			if ($isAjax) {
+				$this->jsonResult(true, '', '');
+			}
 			return;
 		}
 
@@ -37,17 +65,6 @@ class GAuthenticator_Action extends Typecho_Widget implements Widget_Interface_D
 			$referer = (string)$this->request->getReferer();
 		}
 
-		$Authenticator = new PHPGangsta_GoogleAuthenticator();//初始化生成类
-		$oneCode = intval($otp);//手机端生成的一次性代码
-		if($Authenticator->verifyCode($config->SecretKey, $oneCode, $config->SecretTime)){
-			$expire = 1 == $this->request->get('remember') ? Helper::options()->time + Helper::options()->timezone + 30*24*3600 : 0;
-			$_SESSION['GAuthenticator'] = true;//session保存
-			Typecho_Cookie::set('__typecho_GAuthenticator', md5($config->SecretKey.Typecho_Cookie::getPrefix().Typecho_Widget::widget('Widget_User')->uid), $expire);//cookie保存
-		}else{
-			Typecho_Widget::widget('Widget_Notice')->set(_t('两步验证失败'), 'error');
-		}
-
-		// Validate redirect url like core does, and avoid redirect loops to ourselves.
 		$options = Helper::options();
 		if (
 			empty($referer)
@@ -58,6 +75,26 @@ class GAuthenticator_Action extends Typecho_Widget implements Widget_Interface_D
 			)
 		) {
 			$referer = $options->adminUrl;
+		}
+
+		$Authenticator = new PHPGangsta_GoogleAuthenticator();//初始化生成类
+		$oneCode = intval($otp);//手机端生成的一次性代码
+		if($Authenticator->verifyCode($config->SecretKey, $oneCode, $config->SecretTime)){
+			$expire = 1 == $this->request->get('remember') ? Helper::options()->time + Helper::options()->timezone + 30*24*3600 : 0;
+			$_SESSION['GAuthenticator'] = true;//session保存
+			Typecho_Cookie::set('__typecho_GAuthenticator', md5($config->SecretKey.Typecho_Cookie::getPrefix().Typecho_Widget::widget('Widget_User')->uid), $expire);//cookie保存
+
+			if ($isAjax) {
+				$this->jsonResult(true, _t('验证成功'), $referer);
+				return;
+			}
+		} else {
+			if ($isAjax) {
+				$this->jsonResult(false, _t('令牌错误'), '');
+				return;
+			}
+			// non-ajax: show popup message via notice cookie
+			Typecho_Widget::widget('Widget_Notice')->set(_t('令牌错误'), 'error');
 		}
 
 		$this->response->redirect($referer);

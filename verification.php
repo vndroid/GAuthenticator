@@ -14,15 +14,15 @@ include 'header.php';
 <div class="typecho-login-wrap">
     <div class="typecho-login">
         <h1><a href="http://typecho.org" class="i-logo">Typecho</a></h1>
-        <form action="<?= $url ?>" method="post" name="login" role="form">
+        <form action="<?= $url ?>" method="post" name="login" role="form" id="ga-otp-form">
             <p>
                 <label for="otp" class="sr-only"><?php _e('两步验证密码'); ?></label>
                 <input type="text" autofocus="autofocus" id="otp" name="otp" class="text-l w-100" inputmode="numeric"
                        maxlength="6" autocomplete="new-field" oninput="this.value = this.value.replace(/[^0-9]/g, '')" placeholder="<?php _e('两步验证密码'); ?>"/>
             </p>
             <p class="submit">
-                <button type="submit" class="btn btn-l w-100 primary"><?php _e('登录'); ?></button>
-                <input type="hidden" name="referer" value="<?php echo htmlspecialchars($request->get('referer')); ?>"/>
+                <button type="submit" class="btn btn-l w-100 primary" id="ga-otp-submit"><?php _e('登录'); ?></button>
+                <input type="hidden" name="referer" value="<?php echo $request->filter('html')->get('referer'); ?>"/>
             </p>
             <p>
                 <label for="remember"><input type="checkbox" name="remember" class="checkbox" value="1" id="remember"
@@ -43,6 +43,81 @@ include 'header.php';
 </div>
 <?php
 include 'common-js.php';
+?>
+<script>
+(function () {
+    function showPopup(type, msg) {
+        // mimic Typecho admin/common-js.php popup style
+        var head = $('.typecho-head-nav');
+        var p = $('<div class="message popup ' + type + '"><ul><li></li></ul></div>');
+        p.find('li').text(msg);
+
+        if (head.length > 0) {
+            p.insertAfter(head);
+        } else {
+            p.prependTo(document.body);
+        }
+
+        p.hide().slideDown(function () {
+            var t = $(this), color = '#C6D880';
+            if (t.hasClass('error')) {
+                color = '#FBC2C4';
+            } else if (t.hasClass('notice')) {
+                color = '#FFD324';
+            }
+
+            t.effect('highlight', {color: color})
+                .delay(5000)
+                .fadeOut(function () { $(this).remove(); });
+        });
+    }
+
+    $(function () {
+        var $form = $('#ga-otp-form');
+        var $btn = $('#ga-otp-submit');
+
+        $form.on('submit', function (e) {
+            e.preventDefault();
+
+            var otp = $.trim($('#otp').val());
+            if (!otp) {
+                showPopup('error', '<?php echo addslashes(_t('请输入令牌')); ?>');
+                return;
+            }
+
+            $btn.prop('disabled', true).addClass('disabled');
+
+            $.ajax({
+                url: $form.attr('action'),
+                type: 'POST',
+                dataType: 'json',
+                data: {
+                    otp: otp,
+                    remember: $('#remember').is(':checked') ? 1 : 0,
+                    referer: $form.find('input[name=referer]').val()
+                }
+            }).done(function (res) {
+                if (res && res.ok) {
+                    if (res.redirect) {
+                        window.location.href = res.redirect;
+                    } else {
+                        window.location.reload();
+                    }
+                    return;
+                }
+
+                var msg = (res && res.message) ? res.message : '<?php echo addslashes(_t('令牌错误')); ?>';
+                showPopup('error', msg);
+            }).fail(function () {
+                showPopup('error', '<?php echo addslashes(_t('请求失败，请重试')); ?>');
+            }).always(function () {
+                $btn.prop('disabled', false).removeClass('disabled');
+            });
+        });
+    });
+})();
+</script>
+<?php
 include 'footer.php';
 exit;
 ?>
