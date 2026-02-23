@@ -68,7 +68,7 @@ class GAuthenticator_Plugin implements Typecho_Plugin_Interface
         $form->addInput($element);
         $element = new Typecho_Widget_Helper_Form_Element_Text('SecretQRurl', NULL, '', _t('二维码的网址'), '本选项已废弃，保留只是为了向下兼容。和上面图片的地址是相同的。');
         $form->addInput($element);
-        $element = new Typecho_Widget_Helper_Form_Element_Text('SecretTime', NULL, 2, _t('容差时间'), '容差时间，输入的值为30秒的倍数（如果输入2，那么容差时间为 2 × 30秒 = 1分钟）');
+        $element = new Typecho_Widget_Helper_Form_Element_Text('SecretTime', NULL, 2, _t('容差倍率'), '容差时间，输入的值为30秒的倍数（如果输入2，那么容差时间为 2 × 30秒 = 1分钟）');
         $form->addInput($element);
         $element = new Typecho_Widget_Helper_Form_Element_Text('SecretCode', NULL, '', _t('客户端代码'), '用兼容 TOTP 协议的 APP 扫描二维码或者手动输入第一行的 SecretKey 即可生成。');
         $form->addInput($element);
