@@ -6,7 +6,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
  *
  * @package GAuthenticator
  * @author Vex
- * @version 0.0.8
+ * @version 0.0.9
  * @link https://github.com/vndroid/GAuthenticator
  */
 class GAuthenticator_Plugin implements Typecho_Plugin_Interface
