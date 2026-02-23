@@ -13,7 +13,7 @@
 
 请注意：从 0.0.1 升级到 0.0.2+ 版本需要**卸载重新安装**！
 
-兼容所有符合 [RFC6238](https://tools.ietf.org/html/rfc6238 "rfc6238") 规范的 AuthOTP 软件。
+兼容所有符合 [**RFC 6238**](https://tools.ietf.org/html/rfc6238 "rfc6238") 规范的 AuthOTP 软件。
 
 - Microsoft Authenticator
 - Google Authenticator

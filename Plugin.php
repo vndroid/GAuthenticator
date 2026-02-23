@@ -130,6 +130,26 @@ class GAuthenticator_Plugin implements Typecho_Plugin_Interface
 	{
 		if(isset($Authenticator_init))return;
 		$Authenticator_init = true;
+
+		// In Typecho 1.3.0, login submits to /index.php/action/login (Router "do"),
+		// and admin/login.php is the UI. Don't inject OTP page into these flows.
+		$request = new Typecho_Request();
+		$pathInfo = (string)$request->getPathInfo();
+		if ($pathInfo) {
+			// avoid looping on our own route
+			if (false !== strpos($pathInfo, 'GAuthenticator')) {
+				return;
+			}
+			// avoid hijacking login/logout actions (e.g. /action/login, /action/logout)
+			if (0 === strpos($pathInfo, '/action/')) {
+				return;
+			}
+			// avoid login UI itself
+			if (false !== strpos($pathInfo, '/admin/login.php')) {
+				return;
+			}
+		}
+
 		if (!Typecho_Widget::widget('Widget_User')->hasLogin()){
 			return;//如果没登录则直接返回
 		}else{
@@ -139,7 +159,6 @@ class GAuthenticator_Plugin implements Typecho_Plugin_Interface
 			if (Typecho_Cookie::get('__typecho_GAuthenticator') == md5($config->SecretKey.Typecho_Cookie::getPrefix().Typecho_Widget::widget('Widget_User')->uid)) return;//如果COOKIE匹配则直接返回
 			if($config->SecretOn==1){
 				$options = Helper::options();
-				$request = new Typecho_Request();
 				require_once 'verification.php';
 			}else{
 				return;//如果未开启插件则直接返回
