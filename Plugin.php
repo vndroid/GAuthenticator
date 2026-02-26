@@ -118,7 +118,7 @@ class Plugin implements PluginInterface
                 $config['SecretOn'] = 1;
             }
             $config['SecretKey'] = $configOld->SecretKey;
-            $config['SecretQRInfo'] = $configOld->SecretQRurl;
+            $config['SecretQRInfo'] = $configOld->SecretQRInfo;
         }
         $config['SecretCode'] = '';
         Helper::configPlugin('GAuthenticator', $config);
