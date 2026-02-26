@@ -40,7 +40,7 @@ class Plugin implements PluginInterface
         \Typecho\Plugin::factory('admin/menu.php')->navBar = __CLASS__ . '::authenticatorSafe';
         \Typecho\Plugin::factory('admin/common.php')->begin = __CLASS__ . '::authenticatorVerification';
 
-        return _t('当前 2FA 还未启用，请进行<a href="options-plugin.php?config=' . self::$pluginName . '">初始化设置</a>');
+        return _t('当前 2FA 尚未启用，请进行初始化设置');
     }
 
     /**
@@ -80,7 +80,7 @@ class Plugin implements PluginInterface
     </script>');
         $form->addInput($element);
 
-        $element = new Text('SecretQRurl', null, '', _t('二维码的网址'), '本选项已废弃，保留只是为了向下兼容。和上面图片的地址是相同的。');
+        $element = new Text('SecretQRInfo', null, '', _t('二维码原始信息'), '与上方图片信息一致，如果二维码生成失败，可以复制本条使用其他工具生成二维码');
         $form->addInput($element);
 
         $element = new Text('SecretTime', null, '2', _t('容差倍率'), '容差时间，输入的值为30秒的倍数（如果输入2，那么容差时间为 2 × 30秒 = 1分钟）');
@@ -106,14 +106,10 @@ class Plugin implements PluginInterface
             require_once __DIR__ . '/GoogleAuthenticator.php';
             $authenticator = new \PHPGangsta_GoogleAuthenticator();
             $config['SecretKey'] = $authenticator->createSecret();
-            $config['SecretQRurl'] = 'http://qr.liantu.com/api.php?text=' . urlencode(
-                'otpauth://totp/' . urlencode(
-                    Options::alloc()->title . ':' . User::alloc()->mail
-                ) . '?secret=' . $config['SecretKey']
-            );
+            $config['SecretQRInfo'] = urlencode('otpauth://totp/' . urlencode(Options::alloc()->title . ':' . User::alloc()->mail) . '?secret=' . $config['SecretKey']);
         } else {
-            $configOld = Helper::options()->plugin(self::$pluginName);
-            if (($config['SecretCode'] != '' && $config['SecretOn'] == 1) || $config['SecretOn'] == 1) {
+            $configOld = Options::alloc()->plugin('GAuthenticator');
+            if ($config['SecretOn'] == 1 && $config['SecretCode'] != '') {
                 require_once __DIR__ . '/GoogleAuthenticator.php';
                 $authenticator = new \PHPGangsta_GoogleAuthenticator();
                 if (!$authenticator->verifyCode($config['SecretKey'], $config['SecretCode'], $config['SecretTime'])) {
@@ -122,10 +118,10 @@ class Plugin implements PluginInterface
                 $config['SecretOn'] = 1;
             }
             $config['SecretKey'] = $configOld->SecretKey;
-            $config['SecretQRurl'] = $configOld->SecretQRurl;
+            $config['SecretQRInfo'] = $configOld->SecretQRurl;
         }
         $config['SecretCode'] = '';
-        Helper::configPlugin(self::$pluginName, $config);
+        Helper::configPlugin('GAuthenticator', $config);
     }
 
     /**
@@ -143,7 +139,7 @@ class Plugin implements PluginInterface
      */
     public static function authenticatorSafe(): void
     {
-        $config = Helper::options()->plugin(self::$pluginName);
+        $config = Options::alloc()->plugin('GAuthenticator');
         if ($config->SecretOn == 1) {
             echo '<span class="message success">' . htmlspecialchars('2FA 已启用') . '</span>';
         } else {
