@@ -3,6 +3,7 @@
 namespace TypechoPlugin\GAuthenticator;
 
 use Typecho\Cookie;
+use Typecho\Plugin\Exception;
 use Typecho\Widget;
 use Utils\Helper;
 use Widget\ActionInterface;
@@ -39,6 +40,7 @@ class Action extends Widget implements ActionInterface
 
     /**
      * 验证 OTP 令牌
+     * @throws Exception
      */
     public function auth(): void
     {
@@ -75,10 +77,10 @@ class Action extends Widget implements ActionInterface
         $options = Helper::options();
         if (
             empty($referer)
-            || false !== strpos($referer, '/GAuthenticator')
+            || str_contains($referer, '/GAuthenticator')
             || !(
-                0 === strpos($referer, $options->adminUrl)
-                || 0 === strpos($referer, $options->siteUrl)
+                str_starts_with($referer, $options->adminUrl)
+                || str_starts_with($referer, $options->siteUrl)
             )
         ) {
             $referer = $options->adminUrl;
@@ -114,6 +116,7 @@ class Action extends Widget implements ActionInterface
 
     /**
      * 入口函数
+     * @throws Exception
      */
     public function action(): void
     {

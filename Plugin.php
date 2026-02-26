@@ -27,8 +27,6 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  */
 class Plugin implements PluginInterface
 {
-    private static string $pluginName = 'GAuthenticator';
-
     /**
      * 激活插件方法,如果激活失败,直接抛出异常
      *
@@ -86,10 +84,10 @@ class Plugin implements PluginInterface
         $element = new Text('SecretTime', null, '2', _t('容差倍率'), '容差时间，输入的值为30秒的倍数（如果输入2，那么容差时间为 2 × 30秒 = 1分钟）');
         $form->addInput($element);
 
-        $element = new Text('SecretCode', null, '', _t('客户端代码'), '用兼容 TOTP 协议的 APP 扫描二维码或者手动输入第一行的 SecretKey 即可生成。');
+        $element = new Text('SecretCode', null, '', _t('客户端代码'), '六位验证码，用兼容 TOTP 协议的 APP 扫描二维码或者手动输入第一行的 SecretKey 即可生成。');
         $form->addInput($element);
 
-        $element = new Radio('SecretOn', ['1' => '开启', '0' => '关闭'], '0', _t('插件开关'), '这里关掉了，就不需要验证即可登录。');
+        $element = new Radio('SecretOn', ['1' => '开启', '0' => '关闭'], '0', _t('插件开关'), '启用插件并不会自动启用 2FA，需要手动填写客户端验证码并开启此功能');
         $form->addInput($element);
     }
 
@@ -179,7 +177,7 @@ class Plugin implements PluginInterface
             return;
         }
 
-        $config = Helper::options()->plugin(self::$pluginName);
+        $config = Options::alloc()->plugin('GAuthenticator');
 
         if (isset($_SESSION['GAuthenticator']) && $_SESSION['GAuthenticator']) {
             return;
