@@ -2,14 +2,18 @@
 if (!defined('__TYPECHO_ADMIN__')) {
     exit;
 }
-include 'common.php';
 
 $bodyClass = 'body-100';
+$_adminDir = __TYPECHO_ROOT_DIR__ . '/admin/';
 
-$url = ($options->rewrite) ? $options->siteUrl : $options->siteUrl . 'index.php';
-$url = rtrim($url, '/') . '/GAuthenticator';
+/** @var \Widget\Options $options */
+$options = \Widget\Options::alloc();
+/** @var \Typecho\Widget\Request $request */
+$request = $options->request;
 
-include 'header.php';
+$url = \Typecho\Router::url('do', ['action' => 'GAuthenticator'], $options->index);
+
+include $_adminDir . 'header.php';
 ?>
 <div class="typecho-login-wrap">
     <div class="typecho-login">
@@ -42,7 +46,7 @@ include 'header.php';
     </div>
 </div>
 <?php
-include 'common-js.php';
+include $_adminDir . 'common-js.php';
 ?>
 <script>
 (function () {
@@ -118,6 +122,6 @@ include 'common-js.php';
 })();
 </script>
 <?php
-include 'footer.php';
+include $_adminDir . 'footer.php';
 exit;
 ?>

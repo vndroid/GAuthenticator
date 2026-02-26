@@ -1,129 +1,147 @@
 <?php
-if (!defined('__TYPECHO_ROOT_DIR__')) exit;
+
+namespace TypechoPlugin\GAuthenticator;
+
+use Typecho\Plugin\PluginInterface;
+use Typecho\Plugin\Exception;
+use Typecho\Cookie;
+use Typecho\Request;
+use Typecho\Widget\Helper\Form;
+use Typecho\Widget\Helper\Form\Element\Text;
+use Typecho\Widget\Helper\Form\Element\Radio;
+use Utils\Helper;
+use Widget\Options;
+use Widget\User;
+
+if (!defined('__TYPECHO_ROOT_DIR__')) {
+    exit;
+}
 
 /**
  * Google Authenticator for Typecho
  *
  * @package GAuthenticator
  * @author Vex
- * @version 0.0.9
+ * @version 0.1.0
  * @link https://github.com/vndroid/GAuthenticator
  */
-class GAuthenticator_Plugin implements Typecho_Plugin_Interface
+class Plugin implements PluginInterface
 {
-    private static $pluginName = 'GAuthenticator';
+    private static string $pluginName = 'GAuthenticator';
 
     /**
      * 激活插件方法,如果激活失败,直接抛出异常
      *
-     * @access public
      * @return string
-     * @throws Typecho_Plugin_Exception
      */
-    public static function activate()
+    public static function activate(): string
     {
-        Helper::addRoute('GAuthenticator', '/GAuthenticator', 'GAuthenticator_Action', 'Action');
-        Typecho_Plugin::factory('admin/menu.php')->navBar = array(__CLASS__, 'Authenticator_safe');
-        Typecho_Plugin::factory('admin/common.php')->begin = array(__CLASS__, 'Authenticator_verification');
+        Helper::addAction('GAuthenticator', __NAMESPACE__ . '\Action');
+        \Typecho\Plugin::factory('admin/menu.php')->navBar = __CLASS__ . '::authenticatorSafe';
+        \Typecho\Plugin::factory('admin/common.php')->begin = __CLASS__ . '::authenticatorVerification';
+
         return _t('当前 2FA 还未启用，请进行<a href="options-plugin.php?config=' . self::$pluginName . '">初始化设置</a>');
     }
 
     /**
      * 禁用插件方法,如果禁用失败,直接抛出异常
      *
-     * @static
-     * @access public
      * @return void
-     * @throws Typecho_Plugin_Exception
      */
-    public static function deactivate()
+    public static function deactivate(): void
     {
-        Helper::removeRoute('GAuthenticator');
+        Helper::removeAction('GAuthenticator');
     }
 
     /**
      * 获取插件配置面板
      *
-     * @access public
-     * @param Typecho_Widget_Helper_Form $form 配置面板
-     * @return void
+     * @param Form $form 配置面板
      */
-    public static function config(Typecho_Widget_Helper_Form $form)
+    public static function config(Form $form): void
     {
-        $qrurl = 'otpauth://totp/' . urlencode(Helper::options()->title . ':' . Typecho_Widget::widget('Widget_User')->mail) . '?secret=';
-        $element = new Typecho_Widget_Helper_Form_Element_Text('SecretKey', NULL, '', _t('SecretKey'), '
+        $options = Options::alloc();
+        $user = User::alloc();
+        $qrurl = 'otpauth://totp/' . urlencode($options->title . ':' . $user->mail) . '?secret=';
+
+        $element = new Text('SecretKey', null, '', _t('SecretKey'), '
     安装的时候自动计算密钥，手动修改无效，如需要修改请卸载重新安装或者手动修改数据库<br>
     <div style="font-weight: bold; color: #000; text-align: center; display: block;padding: 30px 0 30px 0;font-size: 24px;">
-      请扫描下面的二维码进行绑定<br>
+      请扫描下方二维码进行绑定<br>
       <div style="width: 300px; height: 300px; margin: 20px auto; padding: 20px; background-color: #fff"><span id="qrcode"></span></div>
     </div>
     <script>
       window.onload = function () {
         // https://github.com/jeromeetienne/jquery-qrcode/
-        $.getScript("' . Helper::options()->pluginUrl . '/GAuthenticator/jquery.qrcode.min.js", function () {
+        $.getScript("' . $options->pluginUrl . '/GAuthenticator/jquery.qrcode.min.js", function () {
           $("#qrcode").qrcode({width: 300, height: 300, text: "' . $qrurl . '"+$("input[name=SecretKey]").val()});
         });
       }
     </script>');
         $form->addInput($element);
-        $element = new Typecho_Widget_Helper_Form_Element_Text('SecretQRurl', NULL, '', _t('二维码的网址'), '本选项已废弃，保留只是为了向下兼容。和上面图片的地址是相同的。');
+
+        $element = new Text('SecretQRurl', null, '', _t('二维码的网址'), '本选项已废弃，保留只是为了向下兼容。和上面图片的地址是相同的。');
         $form->addInput($element);
-        $element = new Typecho_Widget_Helper_Form_Element_Text('SecretTime', NULL, 2, _t('容差倍率'), '容差时间，输入的值为30秒的倍数（如果输入2，那么容差时间为 2 × 30秒 = 1分钟）');
+
+        $element = new Text('SecretTime', null, '2', _t('容差倍率'), '容差时间，输入的值为30秒的倍数（如果输入2，那么容差时间为 2 × 30秒 = 1分钟）');
         $form->addInput($element);
-        $element = new Typecho_Widget_Helper_Form_Element_Text('SecretCode', NULL, '', _t('客户端代码'), '用兼容 TOTP 协议的 APP 扫描二维码或者手动输入第一行的 SecretKey 即可生成。');
+
+        $element = new Text('SecretCode', null, '', _t('客户端代码'), '用兼容 TOTP 协议的 APP 扫描二维码或者手动输入第一行的 SecretKey 即可生成。');
         $form->addInput($element);
-        $element = new Typecho_Widget_Helper_Form_Element_Radio('SecretOn', array('1' => '开启', '0' => '关闭'), 0, _t('插件开关'), '这里关掉了，就不需要验证即可登录。');
+
+        $element = new Radio('SecretOn', ['1' => '开启', '0' => '关闭'], '0', _t('插件开关'), '这里关掉了，就不需要验证即可登录。');
         $form->addInput($element);
     }
 
     /**
      * 手动保存配置面板
-     * @param $config array 插件配置
-     * @param $is_init bool 是否初始化
+     *
+     * @param array $config 插件配置
+     * @param bool $is_init 是否初始化
+     * @throws Exception
      */
-    public static function configHandle($config, $is_init)
+    public static function configHandle(array $config, bool $is_init): void
     {
-        if ($is_init) {//如果是第一次初始化插件
-            require_once 'GoogleAuthenticator.php';
-            $Authenticator = new PHPGangsta_GoogleAuthenticator();//初始化生成类
-            $config['SecretKey'] = $Authenticator->createSecret();//生成一个随机安全密钥
-            $config['SecretQRurl'] = 'http://qr.liantu.com/api.php?text=' . urlencode('otpauth://totp/' . urlencode(Helper::options()->title . ':' . Typecho_Widget::widget('Widget_User')->mail) . '?secret=' . $config['SecretKey']);//生成安全密钥的二维码网址
+        if ($is_init) {
+            require_once __DIR__ . '/GoogleAuthenticator.php';
+            $authenticator = new \PHPGangsta_GoogleAuthenticator();
+            $config['SecretKey'] = $authenticator->createSecret();
+            $config['SecretQRurl'] = 'http://qr.liantu.com/api.php?text=' . urlencode(
+                'otpauth://totp/' . urlencode(
+                    Options::alloc()->title . ':' . User::alloc()->mail
+                ) . '?secret=' . $config['SecretKey']
+            );
         } else {
-            $config_old = Helper::options()->plugin(self::$pluginName);
-            if (($config['SecretCode'] != '' && $config['SecretOn'] == 1) || $config['SecretOn'] == 1) {//如果启用,并且验证码不为空
-                require_once 'GoogleAuthenticator.php';
-                $Authenticator = new PHPGangsta_GoogleAuthenticator();
-                if ($Authenticator->verifyCode($config['SecretKey'], $config['SecretCode'], $config['SecretTime'])) {
-                    $config['SecretOn'] = 1;//如果匹配,则启用
-                } else {
-                    throw new Typecho_Plugin_Exception('两步验证代码校验失败,请重试或选择关闭');
+            $configOld = Helper::options()->plugin(self::$pluginName);
+            if (($config['SecretCode'] != '' && $config['SecretOn'] == 1) || $config['SecretOn'] == 1) {
+                require_once __DIR__ . '/GoogleAuthenticator.php';
+                $authenticator = new \PHPGangsta_GoogleAuthenticator();
+                if (!$authenticator->verifyCode($config['SecretKey'], $config['SecretCode'], $config['SecretTime'])) {
+                    throw new Exception('2FA 代码校验失败，请重试或关闭');
                 }
+                $config['SecretOn'] = 1;
             }
-            $config['SecretKey'] = $config_old->SecretKey;//保持初始化SecretKey不被修改
-            $config['SecretQRurl'] = $config_old->SecretQRurl;//保持初始化SecretQRurl不被修改 过时选项 兼容保留
+            $config['SecretKey'] = $configOld->SecretKey;
+            $config['SecretQRurl'] = $configOld->SecretQRurl;
         }
-        $config['SecretCode'] = '';//每次保存不保存验证码
-        Helper::configPlugin(self::$pluginName, $config);//保存插件配置
+        $config['SecretCode'] = '';
+        Helper::configPlugin(self::$pluginName, $config);
     }
 
     /**
      * 个人用户的配置面板
      *
-     * @access public
-     * @param Typecho_Widget_Helper_Form $form
-     * @return void
+     * @param Form $form
      */
-    public static function personalConfig(Typecho_Widget_Helper_Form $form)
+    public static function personalConfig(Form $form): void
     {
     }
 
     /**
-     * 插件实现方法
-     *
-     * @access public
-     * @return void
+     * 在后台导航栏显示 2FA 状态
+     * @throws Exception
      */
-    public static function Authenticator_safe()
+    public static function authenticatorSafe(): void
     {
         $config = Helper::options()->plugin(self::$pluginName);
         if ($config->SecretOn == 1) {
@@ -133,43 +151,50 @@ class GAuthenticator_Plugin implements Typecho_Plugin_Interface
         }
     }
 
-    public static function Authenticator_verification()
+    /**
+     * 拦截未经 OTP 验证的已登录用户
+     * @throws \Typecho\Db\Exception
+     * @throws Exception
+     */
+    public static function authenticatorVerification(): void
     {
-        if (isset($Authenticator_init)) return;
-        $Authenticator_init = true;
+        static $initialized = false;
+        if ($initialized) {
+            return;
+        }
+        $initialized = true;
 
-        // In Typecho 1.3.0, login submits to /index.php/action/login (Router "do"),
-        // and admin/login.php is the UI. Don't inject OTP page into these flows.
-        $request = new Typecho_Request();
-        $pathInfo = (string)$request->getPathInfo();
+        // 跳过自身路由、action 入口和登录页面
+        $pathInfo = (string) Request::getInstance()->getPathInfo();
         if ($pathInfo) {
-            // avoid looping on our own route
-            if (false !== strpos($pathInfo, 'GAuthenticator')) {
+            if (str_contains($pathInfo, 'GAuthenticator')) {
                 return;
             }
-            // avoid hijacking login/logout actions (e.g. /action/login, /action/logout)
-            if (0 === strpos($pathInfo, '/action/')) {
+            if (str_starts_with($pathInfo, '/action/')) {
                 return;
             }
-            // avoid login UI itself
-            if (false !== strpos($pathInfo, '/admin/login.php')) {
+            if (str_contains($pathInfo, '/admin/login.php')) {
                 return;
             }
         }
 
-        if (!Typecho_Widget::widget('Widget_User')->hasLogin()) {
-            return;//如果没登录则直接返回
-        } else {
-            //已经登录就验证
-            $config = Helper::options()->plugin(self::$pluginName);
-            if (isset($_SESSION['GAuthenticator']) && $_SESSION['GAuthenticator']) return;//如果SESSION匹配则直接返回
-            if (Typecho_Cookie::get('__typecho_GAuthenticator') == md5($config->SecretKey . Typecho_Cookie::getPrefix() . Typecho_Widget::widget('Widget_User')->uid)) return;//如果COOKIE匹配则直接返回
-            if ($config->SecretOn == 1) {
-                $options = Helper::options();
-                require_once 'verification.php';
-            } else {
-                return;//如果未开启插件则直接返回
-            }
+        $user = User::alloc();
+        if (!$user->hasLogin()) {
+            return;
+        }
+
+        $config = Helper::options()->plugin(self::$pluginName);
+
+        if (isset($_SESSION['GAuthenticator']) && $_SESSION['GAuthenticator']) {
+            return;
+        }
+
+        if (Cookie::get('__typecho_GAuthenticator') === md5($config->SecretKey . Cookie::getPrefix() . $user->uid)) {
+            return;
+        }
+
+        if ($config->SecretOn == 1) {
+            require_once __DIR__ . '/verification.php';
         }
     }
 }
