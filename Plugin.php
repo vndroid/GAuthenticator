@@ -25,7 +25,7 @@ class GAuthenticator_Plugin implements Typecho_Plugin_Interface
         Helper::addRoute('GAuthenticator', '/GAuthenticator', 'GAuthenticator_Action', 'Action');
         Typecho_Plugin::factory('admin/menu.php')->navBar = array(__CLASS__, 'Authenticator_safe');
         Typecho_Plugin::factory('admin/common.php')->begin = array(__CLASS__, 'Authenticator_verification');
-        return _t('当前两步验证还未启用，请进行<a href="options-plugin.php?config=' . self::$pluginName . '">初始化设置</a>');
+        return _t('当前 2FA 还未启用，请进行<a href="options-plugin.php?config=' . self::$pluginName . '">初始化设置</a>');
     }
 
     /**
@@ -127,9 +127,9 @@ class GAuthenticator_Plugin implements Typecho_Plugin_Interface
     {
         $config = Helper::options()->plugin(self::$pluginName);
         if ($config->SecretOn == 1) {
-            echo '<span class="message success">' . htmlspecialchars('已启用 Authenticator 验证') . '</span>';
+            echo '<span class="message success">' . htmlspecialchars('2FA 已启用') . '</span>';
         } else {
-            echo '<span class="message error">' . htmlspecialchars('未启用 Authenticator 验证') . '</span>';
+            echo '<span class="message error">' . htmlspecialchars('2FA 未启用') . '</span>';
         }
     }
 
