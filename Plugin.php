@@ -22,7 +22,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  *
  * @package GAuthenticator
  * @author Vex
- * @version 0.1.0
+ * @version 0.1.1
  * @link https://github.com/vndroid/GAuthenticator
  */
 class Plugin implements PluginInterface
@@ -35,8 +35,9 @@ class Plugin implements PluginInterface
     public static function activate(): string
     {
         Helper::addAction('GAuthenticator', __NAMESPACE__ . '\Action');
-        \Typecho\Plugin::factory('admin/menu.php')->navBar = __CLASS__ . '::authenticatorSafe';
-        \Typecho\Plugin::factory('admin/common.php')->begin = __CLASS__ . '::authenticatorVerification';
+
+        \Typecho\Plugin::factory('admin/menu.php')->navBar = [self::class, 'authenticatorSafe'];
+        \Typecho\Plugin::factory('admin/common.php')->begin = [self::class, 'authenticatorVerification'];
 
         return _t('当前 2FA 尚未启用，请进行初始化设置');
     }
@@ -106,7 +107,7 @@ class Plugin implements PluginInterface
             $config['SecretKey'] = $authenticator->createSecret();
             $config['SecretQRInfo'] = urlencode('otpauth://totp/' . urlencode(Options::alloc()->title . ':' . User::alloc()->mail) . '?secret=' . $config['SecretKey']);
         } else {
-            $configOld = Options::alloc()->plugin('GAuthenticator');
+            $configOld = Helper::options()->plugin(basename(__DIR__));
             if ($config['SecretOn'] == 1 && $config['SecretCode'] != '') {
                 require_once __DIR__ . '/GoogleAuthenticator.php';
                 $authenticator = new \PHPGangsta_GoogleAuthenticator();
@@ -137,7 +138,7 @@ class Plugin implements PluginInterface
      */
     public static function authenticatorSafe(): void
     {
-        $config = Options::alloc()->plugin('GAuthenticator');
+        $config = Helper::options()->plugin(basename(__DIR__));
         if ($config->SecretOn == 1) {
             echo '<span class="message success">' . htmlspecialchars('2FA 已启用') . '</span>';
         } else {
@@ -177,7 +178,7 @@ class Plugin implements PluginInterface
             return;
         }
 
-        $config = Options::alloc()->plugin('GAuthenticator');
+        $config = Helper::options()->plugin(basename(__DIR__));
 
         if (isset($_SESSION['GAuthenticator']) && $_SESSION['GAuthenticator']) {
             return;
