@@ -93,6 +93,11 @@ class Action extends Widget implements ActionInterface
                 : 0;
 
             $_SESSION['GAuthenticator'] = true;
+            Cookie::setOptions([
+                'domain' => Cookie::getDomain(),
+                'httponly' => true,
+                'secure' => $this->request->isSecure(),
+            ]);
             Cookie::set(
                 '__typecho_GAuthenticator',
                 md5($config->SecretKey . Cookie::getPrefix() . User::alloc()->uid),
