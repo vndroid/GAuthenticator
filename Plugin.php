@@ -31,25 +31,34 @@ class Plugin implements PluginInterface
      * 激活插件方法,如果激活失败,直接抛出异常
      *
      * @return string
+     * @throws Exception
      */
     public static function activate(): string
     {
+        if (!str_ends_with(trim(__DIR__, '/\\'), 'GAuthenticator')) {
+            throw new Exception(_t('插件目录名必须为 GAuthenticator，且首字母大写，请检查插件目录名是否正确'));
+        }
+
         Helper::addAction('GAuthenticator', __NAMESPACE__ . '\Action');
 
         \Typecho\Plugin::factory('admin/menu.php')->navBar = [self::class, 'authenticatorSafe'];
         \Typecho\Plugin::factory('admin/common.php')->begin = [self::class, 'authenticatorVerification'];
 
-        return _t('当前 2FA 尚未启用，请进行初始化设置');
+        $configLink = '<a href="' . Helper::options()->adminUrl('options-plugin.php?config=' . basename(__DIR__), true) . '">' . _t('前往设置') . '</a>';
+
+        return _t('当前 2FA 尚未启用，请进行初始化设置，') . $configLink;
     }
 
     /**
      * 禁用插件方法,如果禁用失败,直接抛出异常
      *
-     * @return void
+     * @return string
      */
-    public static function deactivate(): void
+    public static function deactivate(): string
     {
         Helper::removeAction('GAuthenticator');
+
+        return _t('两步验证已关闭');
     }
 
     /**
