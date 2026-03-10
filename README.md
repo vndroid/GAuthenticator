@@ -25,6 +25,9 @@
 
 ## 更新说明
 
+### 0.1.1
+- [change] 优化插件提示，将 cookie 配置 httpOnly 属性，防止 XSS 攻击
+
 ### 0.1.0
 - [refactor] 重构插件，全面替换为新版 Hook 方法，只兼容 PHP 8.0+ 及 Typecho 1.2+，不再兼容旧版本
 
