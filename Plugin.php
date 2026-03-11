@@ -2,8 +2,9 @@
 
 namespace TypechoPlugin\GAuthenticator;
 
+use Typecho\Db\Exception as DbException;
 use Typecho\Plugin\PluginInterface;
-use Typecho\Plugin\Exception;
+use Typecho\Plugin\Exception as PluginException;
 use Typecho\Cookie;
 use Typecho\Request;
 use Typecho\Widget\Helper\Form;
@@ -31,12 +32,12 @@ class Plugin implements PluginInterface
      * 激活插件方法,如果激活失败,直接抛出异常
      *
      * @return string
-     * @throws Exception
+     * @throws PluginException
      */
     public static function activate(): string
     {
         if (!str_ends_with(trim(__DIR__, '/\\'), 'GAuthenticator')) {
-            throw new Exception(_t('插件目录名必须为 GAuthenticator，且首字母大写，请检查插件目录名是否正确'));
+            throw new PluginException(_t('插件目录名必须为 GAuthenticator，且首字母大写，请检查插件目录名是否正确'));
         }
 
         Helper::addAction('GAuthenticator', __NAMESPACE__ . '\Action');
@@ -106,7 +107,7 @@ class Plugin implements PluginInterface
      *
      * @param array $config 插件配置
      * @param bool $is_init 是否初始化
-     * @throws Exception
+     * @throws PluginException
      */
     public static function configHandle(array $config, bool $is_init): void
     {
@@ -121,7 +122,7 @@ class Plugin implements PluginInterface
                 require_once __DIR__ . '/GoogleAuthenticator.php';
                 $authenticator = new \PHPGangsta_GoogleAuthenticator();
                 if (!$authenticator->verifyCode($config['SecretKey'], $config['SecretCode'], $config['SecretTime'])) {
-                    throw new Exception('2FA 代码校验失败，请重试或关闭');
+                    throw new PluginException('2FA 代码校验失败，请重试或关闭');
                 }
                 $config['SecretOn'] = 1;
             }
@@ -143,7 +144,7 @@ class Plugin implements PluginInterface
 
     /**
      * 在后台导航栏显示 2FA 状态
-     * @throws Exception
+     * @throws PluginException
      */
     public static function authenticatorSafe(): void
     {
@@ -157,8 +158,8 @@ class Plugin implements PluginInterface
 
     /**
      * 拦截未经 OTP 验证的已登录用户
-     * @throws \Typecho\Db\Exception
-     * @throws Exception
+     * @throws DbException
+     * @throws PluginException
      */
     public static function authenticatorVerification(): void
     {
