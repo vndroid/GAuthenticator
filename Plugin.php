@@ -598,6 +598,7 @@ class Plugin implements PluginInterface
      * 读写分离时那份数据可能落后，而这里的值要用来做放行判定。
      *
      * @return array
+     * @throws DbException|PluginException
      */
     private static function primaryGlobalConfig(): array
     {
@@ -605,18 +606,15 @@ class Plugin implements PluginInterface
             return self::$globalConfigCache;
         }
 
-        $config = [];
-        try {
-            $row = self::primaryOptionRow('plugin:GAuthenticator', 0);
-            if ($row) {
-                $decoded = json_decode((string) $row['value'], true);
-                if (is_array($decoded)) {
-                    $config = $decoded;
-                }
-            }
-        } catch (\Throwable $e) {
-            /** 读不到就当作空配置，下面各处自行取安全默认值。 */
-            $config = [];
+        $row = self::primaryOptionRow('plugin:GAuthenticator', 0);
+        if (!$row) {
+            /** 首次启用、尚未保存全局设置时使用安全默认值。 */
+            return self::$globalConfigCache = [];
+        }
+
+        $config = json_decode((string) $row['value'], true);
+        if (!is_array($config)) {
+            throw new PluginException(_t('两步验证全局安全配置损坏，已拒绝认证'));
         }
 
         return self::$globalConfigCache = $config;
@@ -624,8 +622,12 @@ class Plugin implements PluginInterface
 
     private static function xmlRpcAllowed(): bool
     {
-        /** 配置缺失或损坏时保持安全默认值：拒绝。 */
-        return 1 == (self::primaryGlobalConfig()['SecretXmlRpc'] ?? 0);
+        try {
+            return 1 == (self::primaryGlobalConfig()['SecretXmlRpc'] ?? 0);
+        } catch (\Throwable $e) {
+            /** XML-RPC 无法反馈第二因素；读取失败或配置损坏时直接拒绝。 */
+            return false;
+        }
     }
 
     /** 容差倍率同样属于验证参数，必须来自主库。 */
@@ -884,8 +886,13 @@ class Plugin implements PluginInterface
     public static function provisionAllUsers(): void
     {
         $db = Db::get();
-        foreach ($db->fetchAll($db->select('uid')->from('table.users')) as $row) {
-            self::userConfig((int) $row['uid'], true);
+        $adapter = $db->getAdapter();
+        $table = $adapter->quoteColumn($db->getPrefix() . 'users');
+        $rows = $adapter->fetchAll($db->query('SELECT uid FROM ' . $table, Db::WRITE));
+
+        foreach ($rows as $row) {
+            /** 预置属于写操作，存在性判断和补建都必须以主库为准。 */
+            self::userConfig((int) $row['uid'], true, true);
         }
     }
 
