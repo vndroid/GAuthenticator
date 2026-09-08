@@ -63,6 +63,12 @@ class Action extends Widget implements ActionInterface
             $this->finish(false, _t('验证会话已失效, 请重新登录'), Helper::options()->loginUrl);
         }
 
+        if ((int) ($challenge['_locked_until'] ?? 0) > time()) {
+            $minutes = max(1, (int) ceil(((int) $challenge['_locked_until'] - time()) / 60));
+            Plugin::clearChallenge((int) $challenge['uid']);
+            $this->finish(false, _t('两步验证失败次数过多，请 %d 分钟后重试', $minutes), Helper::options()->loginUrl);
+        }
+
         if ($challenge['tries'] > Plugin::MAX_ATTEMPTS) {
             Plugin::clearChallenge((int) $challenge['uid']);
             $this->finish(false, _t('尝试次数过多, 请重新登录'), Helper::options()->loginUrl);
@@ -78,6 +84,12 @@ class Action extends Widget implements ActionInterface
             $usedRecoveryCode = Plugin::consumeRecoveryCode($uid, $code);
         }
         if (!$validTotp && !$usedRecoveryCode) {
+            $lockedUntil = Plugin::recordSecondFactorFailure($uid);
+            if ($lockedUntil > time()) {
+                $minutes = max(1, (int) ceil(($lockedUntil - time()) / 60));
+                Plugin::clearChallenge($uid);
+                $this->finish(false, _t('两步验证失败次数过多，请 %d 分钟后重试', $minutes), Helper::options()->loginUrl);
+            }
             $this->finish(false, _t('令牌错误'));
         }
 
@@ -85,7 +97,7 @@ class Action extends Widget implements ActionInterface
         $referer = Plugin::safeReferer($challenge['referer'] ?? '');
 
         /** 挑战一次性 */
-        if (!Plugin::clearChallenge($uid)) {
+        if (!Plugin::clearChallenge($uid, true)) {
             $this->finish(false, _t('验证会话已失效, 请重新登录'), Helper::options()->loginUrl);
         }
 

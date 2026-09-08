@@ -37,6 +37,15 @@ class Plugin implements PluginInterface
     /** 单个挑战允许的验证次数 */
     public const MAX_ATTEMPTS = 5;
 
+    /** 跨挑战累计失败的统计窗口(秒) */
+    public const FAILURE_WINDOW = 600;
+
+    /** 统计窗口内允许的二次验证失败次数 */
+    public const MAX_FAILURES = 5;
+
+    /** 达到失败上限后的账号锁定时间(秒) */
+    public const LOCK_TTL = 600;
+
     /** 待验证挑战的随机凭据 cookie */
     public const CHALLENGE_COOKIE = '__typecho_GAuthenticator_c';
 
@@ -325,7 +334,7 @@ class Plugin implements PluginInterface
         self::revokeCommittedLogin($uid);
 
         $token = bin2hex(random_bytes(32));
-        self::createChallenge($uid, [
+        $lockedUntil = self::createChallenge($uid, [
             'hash'     => self::challengeHash($token, $uid),
             'uid'      => $uid,
             'expire'   => $expire,
@@ -334,6 +343,11 @@ class Plugin implements PluginInterface
             'referer'  => self::safeReferer(\Typecho\Request::getInstance()->get('referer')),
             'flash'    => '',
         ]);
+        if ($lockedUntil > time()) {
+            self::deleteCookie(self::CHALLENGE_COOKIE);
+            $minutes = max(1, (int) ceil(($lockedUntil - time()) / 60));
+            throw new WidgetException(_t('两步验证失败次数过多，请 %d 分钟后重试', $minutes), 403);
+        }
         self::setCookie(self::CHALLENGE_COOKIE, $uid . ':' . $token, time() + self::CHALLENGE_TTL);
 
         Helper::options()->response->redirect(self::otpUrl());
@@ -533,7 +547,7 @@ class Plugin implements PluginInterface
     }
 
     /**
-     * @return array{SecretOn:int,SecretKey:string,SetupSecret:string,LastSlice:int,TrustedDevices:array,RecoveryCodes:array,Challenge:array}
+     * @return array{SecretOn:int,SecretKey:string,SetupSecret:string,LastSlice:int,TrustedDevices:array,RecoveryCodes:array,Challenge:array,FailureCount:int,FailureWindowStarted:int,LockedUntil:int}
      */
     public static function defaultUserConfig(): array
     {
@@ -545,6 +559,9 @@ class Plugin implements PluginInterface
             'TrustedDevices' => [],
             'RecoveryCodes'  => [],
             'Challenge'      => [],
+            'FailureCount'   => 0,
+            'FailureWindowStarted' => 0,
+            'LockedUntil'    => 0,
         ];
     }
 
@@ -594,6 +611,9 @@ class Plugin implements PluginInterface
         $state['TrustedDevices'] = is_array($state['TrustedDevices']) ? $state['TrustedDevices'] : [];
         $state['RecoveryCodes'] = is_array($state['RecoveryCodes']) ? array_values(array_filter($state['RecoveryCodes'], 'is_string')) : [];
         $state['Challenge'] = is_array($state['Challenge']) ? $state['Challenge'] : [];
+        $state['FailureCount'] = max(0, (int) $state['FailureCount']);
+        $state['FailureWindowStarted'] = max(0, (int) $state['FailureWindowStarted']);
+        $state['LockedUntil'] = max(0, (int) $state['LockedUntil']);
 
         return $state;
     }
@@ -1114,16 +1134,42 @@ class Plugin implements PluginInterface
                 return [null, null];
             }
 
+            if ((int) $state['LockedUntil'] > time()) {
+                $challenge['_locked_until'] = (int) $state['LockedUntil'];
+                return [null, $challenge];
+            }
+
             $challenge['tries'] = (int) ($challenge['tries'] ?? 0) + 1;
             $state['Challenge'] = $challenge;
             return [$state, $challenge];
         });
     }
 
+    /** 记录一次失败；计数不会因为重新输入正确密码并创建新挑战而重置。 */
+    public static function recordSecondFactorFailure(int $uid): int
+    {
+        return (int) self::withUserConfigTransaction($uid, static function (array $state): array {
+            $now = time();
+            $windowStarted = (int) $state['FailureWindowStarted'];
+            if ($windowStarted <= 0 || $windowStarted + self::FAILURE_WINDOW <= $now) {
+                $state['FailureCount'] = 0;
+                $state['FailureWindowStarted'] = $now;
+                $state['LockedUntil'] = 0;
+            }
+
+            $state['FailureCount'] = (int) $state['FailureCount'] + 1;
+            if ($state['FailureCount'] >= self::MAX_FAILURES) {
+                $state['LockedUntil'] = $now + self::LOCK_TTL;
+            }
+
+            return [$state, (int) $state['LockedUntil']];
+        });
+    }
+
     /**
      * 挑战一次性：成功、超时、次数用尽都要立刻作废
      */
-    public static function clearChallenge(int $uid = 0): bool
+    public static function clearChallenge(int $uid = 0, bool $resetFailures = false): bool
     {
         $parts = self::challengeCookieParts();
         if ($parts === null || ($uid > 0 && $uid !== $parts[0])) {
@@ -1134,12 +1180,17 @@ class Plugin implements PluginInterface
         [$cookieUid, $token] = $parts;
         $cleared = (bool) self::withUserConfigTransaction(
             $cookieUid,
-            static function (array $state) use ($cookieUid, $token): array {
+            static function (array $state) use ($cookieUid, $token, $resetFailures): array {
                 if (self::challengeFromState($state, $cookieUid, $token) === null) {
                     return [null, false];
                 }
 
                 $state['Challenge'] = [];
+                if ($resetFailures) {
+                    $state['FailureCount'] = 0;
+                    $state['FailureWindowStarted'] = 0;
+                    $state['LockedUntil'] = 0;
+                }
                 return [$state, true];
             }
         );
@@ -1147,11 +1198,21 @@ class Plugin implements PluginInterface
         return $cleared;
     }
 
-    private static function createChallenge(int $uid, array $challenge): void
+    private static function createChallenge(int $uid, array $challenge): int
     {
-        self::withUserConfigTransaction($uid, static function (array $state) use ($challenge): array {
+        return (int) self::withUserConfigTransaction($uid, static function (array $state) use ($challenge): array {
+            $now = time();
+            if ((int) $state['LockedUntil'] > $now) {
+                return [null, (int) $state['LockedUntil']];
+            }
+
+            if ((int) $state['FailureWindowStarted'] + self::FAILURE_WINDOW <= $now) {
+                $state['FailureCount'] = 0;
+                $state['FailureWindowStarted'] = 0;
+                $state['LockedUntil'] = 0;
+            }
             $state['Challenge'] = $challenge;
-            return [$state, null];
+            return [$state, 0];
         });
     }
 
