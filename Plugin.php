@@ -325,8 +325,7 @@ class Plugin implements PluginInterface
         self::revokeCommittedLogin($uid);
 
         $token = bin2hex(random_bytes(32));
-        $state = self::userConfig($uid, false);
-        $state['Challenge'] = [
+        self::createChallenge($uid, [
             'hash'     => self::challengeHash($token, $uid),
             'uid'      => $uid,
             'expire'   => $expire,
@@ -334,8 +333,7 @@ class Plugin implements PluginInterface
             'tries'    => 0,
             'referer'  => self::safeReferer(\Typecho\Request::getInstance()->get('referer')),
             'flash'    => '',
-        ];
-        self::saveUserConfig($uid, $state);
+        ]);
         self::setCookie(self::CHALLENGE_COOKIE, $uid . ':' . $token, time() + self::CHALLENGE_TTL);
 
         Helper::options()->response->redirect(self::otpUrl());
@@ -431,25 +429,31 @@ class Plugin implements PluginInterface
      */
     public static function issueDeviceToken(int $uid, string $passwordHash): void
     {
-        $state = self::userConfig($uid, false);
-        if (1 !== (int) $state['SecretOn']) {
-            return;
-        }
-
         $now = time();
         $id = bin2hex(random_bytes(8));
         $token = bin2hex(random_bytes(32));
         $deadline = $now + self::DEVICE_TTL;
-        $devices = self::validDevices($state['TrustedDevices']);
-        $devices[] = [
-            'id'      => $id,
-            'hash'    => self::deviceHash($token, $passwordHash),
-            'created' => $now,
-            'expires' => $deadline,
-        ];
-        $state['TrustedDevices'] = array_slice($devices, -self::MAX_DEVICES);
-        self::saveUserConfig($uid, $state);
-        self::setCookie(self::DEVICE_COOKIE, $id . ':' . $token, $deadline);
+        $saved = (bool) self::withUserConfigTransaction(
+            $uid,
+            static function (array $state) use ($id, $token, $passwordHash, $now, $deadline): array {
+                if (1 !== (int) $state['SecretOn']) {
+                    return [null, false];
+                }
+
+                $devices = self::validDevices($state['TrustedDevices']);
+                $devices[] = [
+                    'id'      => $id,
+                    'hash'    => self::deviceHash($token, $passwordHash),
+                    'created' => $now,
+                    'expires' => $deadline,
+                ];
+                $state['TrustedDevices'] = array_slice($devices, -self::MAX_DEVICES);
+                return [$state, true];
+            }
+        );
+        if ($saved) {
+            self::setCookie(self::DEVICE_COOKIE, $id . ':' . $token, $deadline);
+        }
     }
 
     public static function verifyDeviceToken(?string $value, int $uid, string $passwordHash): bool
@@ -459,24 +463,28 @@ class Plugin implements PluginInterface
         }
 
         [$id, $token] = explode(':', $value, 2);
-        $state = self::userConfig($uid, false);
-        $devices = self::validDevices($state['TrustedDevices']);
-        $dirty = count($devices) !== count($state['TrustedDevices']);
-        $valid = false;
+        return (bool) self::withUserConfigTransaction(
+            $uid,
+            static function (array $state) use ($id, $token, $passwordHash): array {
+                $devices = self::validDevices($state['TrustedDevices']);
+                $dirty = count($devices) !== count($state['TrustedDevices']);
+                $valid = false;
 
-        foreach ($devices as $device) {
-            if (hash_equals((string) $device['id'], $id)
-                && hash_equals((string) $device['hash'], self::deviceHash($token, $passwordHash))) {
-                $valid = true;
+                foreach ($devices as $device) {
+                    if (hash_equals((string) $device['id'], $id)
+                        && hash_equals((string) $device['hash'], self::deviceHash($token, $passwordHash))) {
+                        $valid = true;
+                    }
+                }
+
+                if ($dirty) {
+                    $state['TrustedDevices'] = $devices;
+                    return [$state, $valid];
+                }
+
+                return [null, $valid];
             }
-        }
-
-        if ($dirty) {
-            $state['TrustedDevices'] = $devices;
-            self::saveUserConfig($uid, $state);
-        }
-
-        return $valid;
+        );
     }
 
     private static function deviceHash(string $token, string $passwordHash): string
@@ -573,7 +581,12 @@ class Plugin implements PluginInterface
             return $defaults;
         }
 
-        $state = array_merge($defaults, $decoded);
+        return self::normalizeUserConfig($decoded);
+    }
+
+    private static function normalizeUserConfig(array $state): array
+    {
+        $state = array_merge(self::defaultUserConfig(), $state);
         $state['SecretOn'] = 1 === (int) $state['SecretOn'] ? 1 : 0;
         $state['SecretKey'] = is_string($state['SecretKey']) ? $state['SecretKey'] : '';
         $state['SetupSecret'] = is_string($state['SetupSecret']) ? $state['SetupSecret'] : '';
@@ -612,6 +625,98 @@ class Plugin implements PluginInterface
                 'user'  => $uid,
             ]));
         }
+    }
+
+    /**
+     * 在同一个写连接中锁住用户配置、更新并提交。
+     *
+     * 回调返回 [新状态或 null, 返回值]。即使底层是 MyISAM，value 条件更新也会作为
+     * 乐观锁阻止覆盖并发写；SQLite 使用 BEGIN IMMEDIATE，其余数据库使用行锁。
+     *
+     * @return mixed
+     * @throws DbException|PluginException
+     */
+    private static function withUserConfigTransaction(int $uid, callable $callback)
+    {
+        if ($uid <= 0) {
+            throw new PluginException(_t('无效的用户配置'));
+        }
+
+        /** 先确保记录存在，事务中的 SELECT 才能锁到确定的一行。 */
+        self::userConfig($uid, true);
+        $db = Db::get();
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            self::beginTransaction($db);
+            try {
+                $row = self::lockedUserConfigRow($db, $uid);
+                if (!$row) {
+                    self::rollbackTransaction($db);
+                    self::saveUserConfig($uid, self::defaultUserConfig());
+                    continue;
+                }
+
+                $decoded = json_decode((string) $row['value'], true);
+                $state = self::normalizeUserConfig(is_array($decoded) ? $decoded : []);
+                [$newState, $result] = $callback($state);
+
+                if (is_array($newState)) {
+                    $value = json_encode(self::normalizeUserConfig($newState), JSON_UNESCAPED_SLASHES);
+                    if (!is_string($value)) {
+                        throw new PluginException(_t('无法保存两步验证配置'));
+                    }
+
+                    $updated = $db->query($db->update('table.options')->rows(['value' => $value])
+                        ->where('name = ? AND user = ? AND value = ?', self::PERSONAL_OPTION, $uid, (string) $row['value']));
+                    if (1 !== (int) $updated) {
+                        self::rollbackTransaction($db);
+                        continue;
+                    }
+                }
+
+                self::commitTransaction($db);
+                return $result;
+            } catch (\Throwable $e) {
+                self::rollbackTransaction($db);
+                throw $e;
+            }
+        }
+
+        throw new PluginException(_t('两步验证配置正在被并发修改，请重试'));
+    }
+
+    private static function beginTransaction(Db $db): void
+    {
+        $sql = 'sqlite' === $db->getAdapter()->getDriver() ? 'BEGIN IMMEDIATE' : 'START TRANSACTION';
+        $db->query($sql, Db::WRITE, '');
+    }
+
+    private static function commitTransaction(Db $db): void
+    {
+        $db->query('COMMIT', Db::WRITE, '');
+    }
+
+    private static function rollbackTransaction(Db $db): void
+    {
+        try {
+            $db->query('ROLLBACK', Db::WRITE, '');
+        } catch (\Throwable $ignored) {
+            // 保留触发回滚的原始异常。
+        }
+    }
+
+    private static function lockedUserConfigRow(Db $db, int $uid): ?array
+    {
+        $adapter = $db->getAdapter();
+        $table = $adapter->quoteColumn($db->getPrefix() . 'options');
+        $sql = 'SELECT value FROM ' . $table
+            . ' WHERE name = ' . $adapter->quoteValue(self::PERSONAL_OPTION)
+            . ' AND user = ' . $uid;
+        if ('sqlite' !== $adapter->getDriver()) {
+            $sql .= ' FOR UPDATE';
+        }
+
+        return $adapter->fetch($db->query($sql, Db::WRITE));
     }
 
     public static function provisionAllUsers(): void
@@ -709,22 +814,22 @@ class Plugin implements PluginInterface
         return $matched;
     }
 
-    /** 成功后立即写回 LastSlice，避免同一 TOTP 在有效窗口内再次使用。 */
+    /** 在行锁事务中检查并写回 LastSlice，保证同一时间片只能成功一次。 */
     public static function consumeTotp(int $uid, string $otp): bool
     {
-        $state = self::userConfig($uid, false);
-        if (1 !== (int) $state['SecretOn']) {
-            return false;
-        }
+        return (bool) self::withUserConfigTransaction($uid, static function (array $state) use ($otp): array {
+            if (1 !== (int) $state['SecretOn']) {
+                return [null, false];
+            }
 
-        $slice = self::matchTotpSlice($state['SecretKey'], $otp, (int) $state['LastSlice']);
-        if ($slice === null) {
-            return false;
-        }
+            $slice = self::matchTotpSlice($state['SecretKey'], $otp, (int) $state['LastSlice']);
+            if ($slice === null) {
+                return [null, false];
+            }
 
-        $state['LastSlice'] = $slice;
-        self::saveUserConfig($uid, $state);
-        return true;
+            $state['LastSlice'] = $slice;
+            return [$state, true];
+        });
     }
 
     /**
@@ -750,21 +855,21 @@ class Plugin implements PluginInterface
             return false;
         }
 
-        $state = self::userConfig($uid, false);
-        if (1 !== (int) $state['SecretOn']) {
-            return false;
-        }
-
-        foreach ($state['RecoveryCodes'] as $index => $hash) {
-            if (password_verify($normalized, $hash)) {
-                unset($state['RecoveryCodes'][$index]);
-                $state['RecoveryCodes'] = array_values($state['RecoveryCodes']);
-                self::saveUserConfig($uid, $state);
-                return true;
+        return (bool) self::withUserConfigTransaction($uid, static function (array $state) use ($normalized): array {
+            if (1 !== (int) $state['SecretOn']) {
+                return [null, false];
             }
-        }
 
-        return false;
+            foreach ($state['RecoveryCodes'] as $index => $hash) {
+                if (password_verify($normalized, $hash)) {
+                    unset($state['RecoveryCodes'][$index]);
+                    $state['RecoveryCodes'] = array_values($state['RecoveryCodes']);
+                    return [$state, true];
+                }
+            }
+
+            return [null, false];
+        });
     }
 
     private static function rememberRecoveryCodes(array $codes): void
@@ -969,18 +1074,15 @@ class Plugin implements PluginInterface
      */
     public static function getChallenge(): ?array
     {
-        $cookie = Cookie::get(self::CHALLENGE_COOKIE);
-        if (!is_string($cookie) || !preg_match('/^([1-9][0-9]*):([0-9a-f]{64})$/D', $cookie, $parts)) {
+        $parts = self::challengeCookieParts();
+        if ($parts === null) {
             return null;
         }
 
-        $uid = (int) $parts[1];
+        [$uid, $token] = $parts;
         $state = self::userConfig($uid, false);
-        $challenge = $state['Challenge'];
-        if (!is_array($challenge)
-            || (int) ($challenge['uid'] ?? 0) !== $uid
-            || !isset($challenge['hash'])
-            || !hash_equals((string) $challenge['hash'], self::challengeHash($parts[2], $uid))) {
+        $challenge = self::challengeFromState($state, $uid, $token);
+        if ($challenge === null) {
             self::deleteCookie(self::CHALLENGE_COOKIE);
             return null;
         }
@@ -994,40 +1096,110 @@ class Plugin implements PluginInterface
     }
 
     /**
-     * @param array $challenge
+     * 每次 POST 先在事务中增加尝试次数，不能用旧 Cookie 回滚计数。
+     *
+     * @return array|null
      */
-    public static function saveChallenge(array $challenge): void
+    public static function recordChallengeAttempt(): ?array
     {
-        $uid = (int) ($challenge['uid'] ?? 0);
-        if ($uid <= 0 || self::getChallenge() === null) {
-            return;
+        $parts = self::challengeCookieParts();
+        if ($parts === null) {
+            return null;
         }
 
-        $state = self::userConfig($uid, false);
-        $hash = (string) ($state['Challenge']['hash'] ?? '');
-        $challenge['hash'] = $hash;
-        $state['Challenge'] = $challenge;
-        self::saveUserConfig($uid, $state);
+        [$uid, $token] = $parts;
+        return self::withUserConfigTransaction($uid, static function (array $state) use ($uid, $token): array {
+            $challenge = self::challengeFromState($state, $uid, $token);
+            if ($challenge === null || (int) ($challenge['deadline'] ?? 0) < time()) {
+                return [null, null];
+            }
+
+            $challenge['tries'] = (int) ($challenge['tries'] ?? 0) + 1;
+            $state['Challenge'] = $challenge;
+            return [$state, $challenge];
+        });
     }
 
     /**
      * 挑战一次性：成功、超时、次数用尽都要立刻作废
      */
-    public static function clearChallenge(int $uid = 0): void
+    public static function clearChallenge(int $uid = 0): bool
     {
-        if ($uid <= 0) {
-            $cookie = Cookie::get(self::CHALLENGE_COOKIE);
-            if (is_string($cookie) && preg_match('/^([1-9][0-9]*):/', $cookie, $parts)) {
-                $uid = (int) $parts[1];
-            }
+        $parts = self::challengeCookieParts();
+        if ($parts === null || ($uid > 0 && $uid !== $parts[0])) {
+            self::deleteCookie(self::CHALLENGE_COOKIE);
+            return false;
         }
 
-        if ($uid > 0) {
-            $state = self::userConfig($uid, false);
-            $state['Challenge'] = [];
-            self::saveUserConfig($uid, $state);
-        }
+        [$cookieUid, $token] = $parts;
+        $cleared = (bool) self::withUserConfigTransaction(
+            $cookieUid,
+            static function (array $state) use ($cookieUid, $token): array {
+                if (self::challengeFromState($state, $cookieUid, $token) === null) {
+                    return [null, false];
+                }
+
+                $state['Challenge'] = [];
+                return [$state, true];
+            }
+        );
         self::deleteCookie(self::CHALLENGE_COOKIE);
+        return $cleared;
+    }
+
+    private static function createChallenge(int $uid, array $challenge): void
+    {
+        self::withUserConfigTransaction($uid, static function (array $state) use ($challenge): array {
+            $state['Challenge'] = $challenge;
+            return [$state, null];
+        });
+    }
+
+    private static function challengeCookieParts(): ?array
+    {
+        $cookie = Cookie::get(self::CHALLENGE_COOKIE);
+        if (!is_string($cookie) || !preg_match('/^([1-9][0-9]*):([0-9a-f]{64})$/D', $cookie, $parts)) {
+            return null;
+        }
+
+        return [(int) $parts[1], $parts[2]];
+    }
+
+    private static function challengeFromState(array $state, int $uid, string $token): ?array
+    {
+        $challenge = $state['Challenge'] ?? null;
+        if (!is_array($challenge)
+            || (int) ($challenge['uid'] ?? 0) !== $uid
+            || !isset($challenge['hash'])
+            || !hash_equals((string) $challenge['hash'], self::challengeHash($token, $uid))) {
+            return null;
+        }
+
+        return $challenge;
+    }
+
+    private static function updateChallengeFlash(string $message, bool $take)
+    {
+        $parts = self::challengeCookieParts();
+        if ($parts === null) {
+            return $take ? '' : null;
+        }
+
+        [$uid, $token] = $parts;
+        return self::withUserConfigTransaction($uid, static function (array $state) use ($uid, $token, $message, $take): array {
+            $challenge = self::challengeFromState($state, $uid, $token);
+            if ($challenge === null || (int) ($challenge['deadline'] ?? 0) < time()) {
+                return [null, $take ? '' : null];
+            }
+
+            $old = (string) ($challenge['flash'] ?? '');
+            if (($take && $old === '') || (!$take && hash_equals($old, $message))) {
+                return [null, $take ? $old : null];
+            }
+            $challenge['flash'] = $take ? '' : $message;
+            $state['Challenge'] = $challenge;
+            return [$state, $take ? $old : null];
+        });
     }
 
     /**
@@ -1037,11 +1209,7 @@ class Plugin implements PluginInterface
      */
     public static function setFlash(string $message): void
     {
-        $challenge = self::getChallenge();
-        if ($challenge !== null) {
-            $challenge['flash'] = $message;
-            self::saveChallenge($challenge);
-        }
+        self::updateChallengeFlash($message, false);
     }
 
     /**
@@ -1049,15 +1217,7 @@ class Plugin implements PluginInterface
      */
     public static function takeFlash(): string
     {
-        $challenge = self::getChallenge();
-        if ($challenge === null) {
-            return '';
-        }
-
-        $message = (string) ($challenge['flash'] ?? '');
-        $challenge['flash'] = '';
-        self::saveChallenge($challenge);
-        return $message;
+        return (string) self::updateChallengeFlash('', true);
     }
 
     private static function challengeHash(string $token, int $uid): string

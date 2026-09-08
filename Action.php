@@ -58,14 +58,15 @@ class Action extends Widget implements ActionInterface
     private function verify(array $challenge): void
     {
         /** 先记账再校验，保证「猜一次就算一次」 */
-        $challenge['tries'] = intval($challenge['tries'] ?? 0) + 1;
+        $challenge = Plugin::recordChallengeAttempt();
+        if ($challenge === null) {
+            $this->finish(false, _t('验证会话已失效, 请重新登录'), Helper::options()->loginUrl);
+        }
 
         if ($challenge['tries'] > Plugin::MAX_ATTEMPTS) {
             Plugin::clearChallenge((int) $challenge['uid']);
             $this->finish(false, _t('尝试次数过多, 请重新登录'), Helper::options()->loginUrl);
         }
-
-        Plugin::saveChallenge($challenge);
 
         $code = trim((string) $this->request->get('code'));
         $uid = intval($challenge['uid']);
@@ -84,7 +85,9 @@ class Action extends Widget implements ActionInterface
         $referer = Plugin::safeReferer($challenge['referer'] ?? '');
 
         /** 挑战一次性 */
-        Plugin::clearChallenge($uid);
+        if (!Plugin::clearChallenge($uid)) {
+            $this->finish(false, _t('验证会话已失效, 请重新登录'), Helper::options()->loginUrl);
+        }
 
         $user = User::alloc();
         if (!$user->simpleLogin($uid, false, $expire)) {
