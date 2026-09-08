@@ -33,6 +33,12 @@ DELETE FROM typecho_options WHERE name = '_plugin:GAuthenticator' AND user = <ui
 ```
 
   删除后该用户恢复为“未绑定”，可用密码登录，登录后请立即重新绑定。
+- 如果**所有用户**提交验证码都提示“两步验证全局安全配置损坏，已拒绝认证”，损坏的是站点级的 `plugin:GAuthenticator` 配置，不是某个用户的记录。**不需要数据库权限也能自救**：任一管理员用恢复码登录（恢复码不是六位数字，不受这条限制影响），进入“设置 → GAuthenticator”，直接点保存一次即可把全局配置写回正常值。如果所有管理员的恢复码都已用完，才需要由有数据库权限的人重建这一行：
+
+```sql
+UPDATE typecho_options SET value = '{"SecretTime":"1","SecretXmlRpc":"0"}'
+  WHERE name = 'plugin:GAuthenticator' AND user = 0;
+```
 
 兼容所有符合 [**RFC 6238**](https://tools.ietf.org/html/rfc6238 "rfc6238") 规范的 AuthOTP 软件。
 

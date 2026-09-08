@@ -970,6 +970,15 @@ class Plugin implements PluginInterface
      */
     public static function matchTotpSlice(string $secret, string $otp): ?int
     {
+        /**
+         * 这个提前返回必须留在 tolerance() 之前，不要为了省事调换顺序。
+         *
+         * tolerance() 在全局配置行损坏时会抛异常，而恢复码不是六位数字，
+         * 会在这里就被挡掉、走不到那一步 —— 这正是全局配置损坏时用户还能
+         * 用恢复码登进后台、再从插件设置页把配置存回去的原因。
+         * 一旦让 tolerance() 先执行，那条自救路径就会一起断掉，
+         * 全站将只能靠数据库权限恢复。
+         */
         if ($secret === '' || !preg_match('/^\d{6}$/D', $otp)) {
             return null;
         }
