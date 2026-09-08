@@ -82,6 +82,9 @@ class Plugin implements PluginInterface
     /** 每个请求只执行一次旧全局配置清理 */
     private static bool $globalMigrated = false;
 
+    /** 每个请求只从主库读一次全局策略配置 */
+    private static ?array $globalConfigCache = null;
+
     /**
      * 激活插件方法,如果激活失败,直接抛出异常
      *
@@ -588,20 +591,47 @@ class Plugin implements PluginInterface
         return Helper::options()->plugin('GAuthenticator');
     }
 
-    private static function xmlRpcAllowed(): bool
+    /**
+     * 从主库读全局策略配置，每个请求只读一次。
+     *
+     * 不能用 Helper::options()->plugin()：Options 组件是通过 READ 连接加载的，
+     * 读写分离时那份数据可能落后，而这里的值要用来做放行判定。
+     *
+     * @return array
+     */
+    private static function primaryGlobalConfig(): array
     {
+        if (is_array(self::$globalConfigCache)) {
+            return self::$globalConfigCache;
+        }
+
+        $config = [];
         try {
             $row = self::primaryOptionRow('plugin:GAuthenticator', 0);
-            if (!$row) {
-                return false;
+            if ($row) {
+                $decoded = json_decode((string) $row['value'], true);
+                if (is_array($decoded)) {
+                    $config = $decoded;
+                }
             }
-
-            $config = json_decode((string) $row['value'], true);
-            return is_array($config) && 1 == ($config['SecretXmlRpc'] ?? 0);
         } catch (\Throwable $e) {
-            /** 主库读取失败或配置损坏时保持安全默认值。 */
-            return false;
+            /** 读不到就当作空配置，下面各处自行取安全默认值。 */
+            $config = [];
         }
+
+        return self::$globalConfigCache = $config;
+    }
+
+    private static function xmlRpcAllowed(): bool
+    {
+        /** 配置缺失或损坏时保持安全默认值：拒绝。 */
+        return 1 == (self::primaryGlobalConfig()['SecretXmlRpc'] ?? 0);
+    }
+
+    /** 容差倍率同样属于验证参数，必须来自主库。 */
+    private static function tolerance(): int
+    {
+        return self::discrepancy(self::primaryGlobalConfig()['SecretTime'] ?? 1);
     }
 
     /**
@@ -874,6 +904,9 @@ class Plugin implements PluginInterface
                 'name' => 'plugin:GAuthenticator', 'value' => $value, 'user' => 0,
             ]));
         }
+
+        /** 本请求内再读到的必须是刚写进去的值 */
+        self::$globalConfigCache = null;
     }
 
     /** 第一次运行新版本时从数据库中实际移除旧的全站共享密钥。 */
@@ -885,17 +918,22 @@ class Plugin implements PluginInterface
         self::$globalMigrated = true;
 
         try {
-            $old = self::pluginConfig();
-            $values = $old->toArray();
+            /**
+             * 这里要往主库写，判断依据也必须来自主库。
+             * 用 Options 组件(READ 连接)读到的可能是落后的副本，会拿旧值覆盖主库；
+             * 而且 config() 为了不把旧密钥渲染进 HTML，会先把这些键从那份 Config 上摘掉，
+             * 同一请求里再去读就什么都看不到了。
+             */
+            $values = self::primaryGlobalConfig();
             if (!array_intersect(['SecretKey', 'SecretQRInfo', 'SecretCode', 'SecretOn'], array_keys($values))) {
                 return;
             }
             self::saveGlobalConfig([
-                'SecretTime'   => (string) self::discrepancy($old->SecretTime ?? 1),
-                'SecretXmlRpc' => 1 == ($old->SecretXmlRpc ?? 0) ? '1' : '0',
+                'SecretTime'   => (string) self::discrepancy($values['SecretTime'] ?? 1),
+                'SecretXmlRpc' => 1 == ($values['SecretXmlRpc'] ?? 0) ? '1' : '0',
             ]);
-        } catch (PluginException $e) {
-            // 首次启用时由 configHandle 创建全局配置。
+        } catch (\Throwable $e) {
+            /** 迁移只是清理历史遗留字段，失败不该阻断请求；认证路径自己会因读不到主库而拒绝。 */
         }
     }
 
@@ -931,11 +969,7 @@ class Plugin implements PluginInterface
 
         require_once __DIR__ . '/GoogleAuthenticator.php';
         $authenticator = new \PHPGangsta_GoogleAuthenticator();
-        try {
-            $discrepancy = self::discrepancy(self::pluginConfig()->SecretTime ?? 1);
-        } catch (PluginException $e) {
-            $discrepancy = 1;
-        }
+        $discrepancy = self::tolerance();
 
         $nowSlice = (int) floor(time() / 30);
         $matched = null;
