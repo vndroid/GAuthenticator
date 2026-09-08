@@ -15,21 +15,24 @@ class PHPGangsta_GoogleAuthenticator
 
     /**
      * Create new secret.
-     * 16 characters, randomly chosen from the allowed base32 characters.
      *
-     * @param int $secretLength
+     * 用 random_bytes 取随机源: array_rand() 底层是 mt_rand, 不是密码学安全的,
+     * 不能用来生成认证密钥。默认 32 个 base32 字符 = 20 字节 = 160 bit,
+     * 即 RFC 4226 建议的强度(旧实现只有 16 字符 = 80 bit)。
+     *
+     * 每 8 个 base32 字符正好对应 5 字节, 所以长度向上对齐到 8 的倍数,
+     * 编码结果不会出现 '=' 填充。
+     *
+     * @param int $secretLength base32 字符数, 会向上对齐到 8 的倍数
      * @return string
+     * @throws Exception 随机源不可用时由 random_bytes 抛出
      */
-    public function createSecret($secretLength = 16)
+    public function createSecret($secretLength = 32)
     {
-        $validChars = $this->_getBase32LookupTable();
-        unset($validChars[32]);
+        $secretLength = max(16, min(128, intval($secretLength)));
+        $groups = intdiv($secretLength + 7, 8);
 
-        $secret = '';
-        for ($i = 0; $i < $secretLength; $i++) {
-            $secret .= $validChars[array_rand($validChars)];
-        }
-        return $secret;
+        return $this->_base32Encode(random_bytes($groups * 5), false);
     }
 
     /**

@@ -31,6 +31,11 @@
 
 ## 更新说明
 
+### 0.2.1
+- [security] `createSecret()` 改用 `random_bytes()`：原来用的 `array_rand()` 底层是 `mt_rand`，不是密码学安全的随机源
+- [security] 新密钥长度从 16 个 base32 字符（80 bit）提高到 32 个（160 bit，RFC 4226 建议强度）
+- 已有站点的旧密钥继续可用，**不会自动升级**；想换成强密钥需要禁用再启用插件（会重新生成密钥并需要重新扫码）
+
 ### 0.2.0
 - [security] 重构登录状态机：密码校验通过后立即作废 Typecho 刚签发的凭据，改为建立 5 分钟、最多 5 次的一次性挑战，OTP 通过后才真正 `commitLogin`
 - [security] 2FA 开启时拒绝 XML-RPC / MetaWeblog 的密码认证（新增开关，默认拒绝）；pingback 不受影响
