@@ -41,10 +41,10 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
 
         <form action="<?php echo htmlspecialchars($formAction, ENT_QUOTES, $options->charset); ?>" method="post" name="otp" role="form">
             <p>
-                <label for="otp" class="sr-only"><?php _e('两步验证密码'); ?></label>
-                <input type="text" autofocus="autofocus" id="otp" name="otp" class="text-l w-100"
-                       inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code"
-                       placeholder="<?php _e('两步验证密码'); ?>"/>
+                <label for="code" class="sr-only"><?php _e('验证码或恢复码'); ?></label>
+                <input type="text" autofocus="autofocus" id="code" name="code" class="text-l w-100"
+                       maxlength="11" autocomplete="one-time-code"
+                       placeholder="<?php _e('六位验证码或恢复码'); ?>"/>
             </p>
             <p>
                 <label for="remember">

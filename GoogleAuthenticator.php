@@ -96,13 +96,19 @@ class PHPGangsta_GoogleAuthenticator
      */
     public function verifyCode($secret, $code, $discrepancy = 1, $currentTimeSlice = null)
     {
+        $code = (string) $code;
+        if (!preg_match('/^\d{' . $this->_codeLength . '}$/D', $code)) {
+            return false;
+        }
+
+        $discrepancy = max(0, intval($discrepancy));
         if ($currentTimeSlice === null) {
             $currentTimeSlice = floor(time() / 30);
         }
 
         for ($i = -$discrepancy; $i <= $discrepancy; $i++) {
             $calculatedCode = $this->getCode($secret, $currentTimeSlice + $i);
-            if ($calculatedCode == $code ) {
+            if (hash_equals($calculatedCode, $code)) {
                 return true;
             }
         }

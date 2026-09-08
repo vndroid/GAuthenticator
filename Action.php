@@ -7,6 +7,7 @@ use Typecho\Plugin\Exception as PluginException;
 use Typecho\Widget;
 use Utils\Helper;
 use Widget\ActionInterface;
+use Widget\Notice;
 use Widget\User;
 
 if (!defined('__TYPECHO_ROOT_DIR__')) {
@@ -35,10 +36,6 @@ class Action extends Widget implements ActionInterface
             ->setHeader('Referrer-Policy', 'same-origin')
             ->setHeader('X-Robots-Tag', 'noindex, nofollow');
 
-        if (!Plugin::isEnabled()) {
-            $this->response->redirect(Helper::options()->siteUrl);
-        }
-
         $challenge = Plugin::getChallenge();
 
         if (empty($challenge)) {
@@ -64,26 +61,30 @@ class Action extends Widget implements ActionInterface
         $challenge['tries'] = intval($challenge['tries'] ?? 0) + 1;
 
         if ($challenge['tries'] > Plugin::MAX_ATTEMPTS) {
-            Plugin::clearChallenge();
+            Plugin::clearChallenge((int) $challenge['uid']);
             $this->finish(false, _t('尝试次数过多, 请重新登录'), Helper::options()->loginUrl);
         }
 
         Plugin::saveChallenge($challenge);
 
-        $otp = (string) $this->request->get('otp');
+        $code = trim((string) $this->request->get('code'));
+        $uid = intval($challenge['uid']);
 
-        /** 统一的失败回执，不区分「格式不对」和「码不对」 */
-        if (!preg_match('/^\d{6}$/D', $otp) || !$this->verifyOtp($otp)) {
+        /** OTP 和恢复码共用统一回执，不泄露使用的是哪种凭据。 */
+        $validTotp = Plugin::consumeTotp($uid, $code);
+        $usedRecoveryCode = false;
+        if (!$validTotp) {
+            $usedRecoveryCode = Plugin::consumeRecoveryCode($uid, $code);
+        }
+        if (!$validTotp && !$usedRecoveryCode) {
             $this->finish(false, _t('令牌错误'));
         }
 
-        $uid = intval($challenge['uid']);
         $expire = intval($challenge['expire'] ?? 0);
         $referer = Plugin::safeReferer($challenge['referer'] ?? '');
 
         /** 挑战一次性 */
-        Plugin::clearChallenge();
-        session_regenerate_id(true);
+        Plugin::clearChallenge($uid);
 
         $user = User::alloc();
         if (!$user->simpleLogin($uid, false, $expire)) {
@@ -94,42 +95,15 @@ class Action extends Widget implements ActionInterface
         Plugin::issueSessionToken($uid, (string) $user->authCode, $expire);
 
         if (1 == $this->request->get('remember')) {
-            $deadline = time() + Plugin::DEVICE_TTL;
-            Plugin::setCookie(
-                Plugin::DEVICE_COOKIE,
-                Plugin::deviceToken($uid, (string) $user->password, $deadline),
-                $deadline
-            );
+            Plugin::issueDeviceToken($uid, (string) $user->password);
+        }
+
+        if ($usedRecoveryCode) {
+            $remaining = count(Plugin::userConfig($uid, false)['RecoveryCodes']);
+            Notice::alloc()->set(_t('已使用一个恢复码，剩余 %d 个；请尽快检查或轮换两步验证密钥', $remaining), 'notice');
         }
 
         $this->finish(true, _t('验证成功'), $referer);
-    }
-
-    /**
-     * 恒定轮次地比对整个容差窗口，比对本身用 hash_equals
-     *
-     * @param string $otp
-     * @return bool
-     * @throws PluginException
-     */
-    private function verifyOtp(string $otp): bool
-    {
-        require_once __DIR__ . '/GoogleAuthenticator.php';
-
-        $config = Plugin::pluginConfig();
-        $authenticator = new \PHPGangsta_GoogleAuthenticator();
-
-        $discrepancy = Plugin::discrepancy($config->SecretTime);
-        $slice = floor(time() / 30);
-        $matched = false;
-
-        for ($i = -$discrepancy; $i <= $discrepancy; $i++) {
-            if (hash_equals((string) $authenticator->getCode($config->SecretKey, $slice + $i), $otp)) {
-                $matched = true;
-            }
-        }
-
-        return $matched;
     }
 
     /**
@@ -156,7 +130,7 @@ class Action extends Widget implements ActionInterface
             $this->response->redirect($redirect);
         }
 
-        /** 无 JS 的普通表单：把提示放进 session 闪存，回到 OTP 页面再显示 */
+        /** 无 JS 的普通表单：把提示放进服务端挑战状态，回到 OTP 页面再显示 */
         Plugin::setFlash($message);
         $this->response->redirect(Plugin::otpUrl());
     }
