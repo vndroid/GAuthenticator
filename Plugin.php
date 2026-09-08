@@ -331,7 +331,8 @@ class Plugin implements PluginInterface
     public static function authenticatorSafe(): void
     {
         $user = User::alloc();
-        if ($user->hasLogin() && self::userIsEnabled((int) $user->uid)) {
+        /** 导航栏只是状态展示，不参与放行判定，可以使用普通读连接。 */
+        if ($user->hasLogin() && self::userIsEnabled((int) $user->uid, false)) {
             echo '<span class="message success">' . htmlspecialchars('2FA 已启用') . '</span>';
         } else {
             echo '<span class="message error">' . htmlspecialchars('当前账号未启用 2FA') . '</span>';
@@ -359,7 +360,20 @@ class Plugin implements PluginInterface
     public static function onLoginSucceed(User $user, string $name, string $password, bool $temporarily, int $expire): void
     {
         $uid = (int) $user->uid;
-        if (!self::userIsEnabled($uid)) {
+        try {
+            $enabled = self::userIsEnabled($uid);
+        } catch (\Throwable $e) {
+            /**
+             * 非临时登录到达此钩子前，Typecho 已提交完整登录凭据。
+             * 主库安全状态无法读取时，必须先撤销它，不能把异常当作未绑定放行。
+             */
+            if (!$temporarily) {
+                self::revokeCommittedLogin($uid);
+            }
+            throw $e;
+        }
+
+        if (!$enabled) {
             /** 产品策略：没有绑定 2FA 的用户默认放行。 */
             return;
         }
@@ -577,16 +591,22 @@ class Plugin implements PluginInterface
     private static function xmlRpcAllowed(): bool
     {
         try {
-            return 1 == (self::pluginConfig()->SecretXmlRpc ?? 0);
-        } catch (PluginException $e) {
-            /** 配置缺失时保持安全默认值。 */
+            $row = self::primaryOptionRow('plugin:GAuthenticator', 0);
+            if (!$row) {
+                return false;
+            }
+
+            $config = json_decode((string) $row['value'], true);
+            return is_array($config) && 1 == ($config['SecretXmlRpc'] ?? 0);
+        } catch (\Throwable $e) {
+            /** 主库读取失败或配置损坏时保持安全默认值。 */
             return false;
         }
     }
 
-    public static function userIsEnabled(int $uid): bool
+    public static function userIsEnabled(int $uid, bool $primary = true): bool
     {
-        $state = self::userConfig($uid, true);
+        $state = self::userConfig($uid, true, $primary);
         return 1 === (int) $state['SecretOn'] && $state['SecretKey'] !== '';
     }
 
@@ -595,7 +615,7 @@ class Plugin implements PluginInterface
     {
         $uid = (int) $registration->uid;
         if ($uid > 0) {
-            self::userConfig($uid, true);
+            self::userConfig($uid, true, true);
         }
     }
 
@@ -619,11 +639,12 @@ class Plugin implements PluginInterface
     }
 
     /**
-     * 按 uid 读取个人配置。缺行、旧格式或损坏数据都安全降级为「未绑定并放行」。
+     * 按 uid 读取个人配置。$primary 只用于认证关键路径，强制复用 Typecho 的写连接；
+     * 主库查询失败会抛出异常，不能降级为「未绑定并放行」。
      *
      * @return array
      */
-    public static function userConfig(int $uid, bool $create = true): array
+    public static function userConfig(int $uid, bool $create = true, bool $primary = false): array
     {
         self::migrateGlobalConfig();
         $defaults = self::defaultUserConfig();
@@ -632,9 +653,11 @@ class Plugin implements PluginInterface
         }
 
         $db = Db::get();
-        $row = $db->fetchRow($db->select('value')->from('table.options')
-            ->where('name = ? AND user = ?', self::PERSONAL_OPTION, $uid)
-            ->limit(1));
+        $row = $primary
+            ? self::primaryOptionRow(self::PERSONAL_OPTION, $uid)
+            : $db->fetchRow($db->select('value')->from('table.options')
+                ->where('name = ? AND user = ?', self::PERSONAL_OPTION, $uid)
+                ->limit(1));
 
         if (!$row) {
             if ($create) {
@@ -645,6 +668,9 @@ class Plugin implements PluginInterface
 
         $decoded = json_decode((string) $row['value'], true);
         if (!is_array($decoded)) {
+            if ($primary) {
+                throw new PluginException(_t('两步验证安全配置损坏，已拒绝登录'));
+            }
             if ($create) {
                 self::saveUserConfig($uid, $defaults);
             }
@@ -684,9 +710,8 @@ class Plugin implements PluginInterface
         }
 
         $db = Db::get();
-        $exists = $db->fetchRow($db->select('name')->from('table.options')
-            ->where('name = ? AND user = ?', self::PERSONAL_OPTION, $uid)
-            ->limit(1));
+        /** 写入前的存在性判断也必须看主库，避免副本延迟导致重复 INSERT。 */
+        $exists = self::primaryOptionRow(self::PERSONAL_OPTION, $uid);
 
         if ($exists) {
             $db->query($db->update('table.options')->rows(['value' => $value])
@@ -716,7 +741,7 @@ class Plugin implements PluginInterface
         }
 
         /** 先确保记录存在，事务中的 SELECT 才能锁到确定的一行。 */
-        self::userConfig($uid, true);
+        self::userConfig($uid, true, true);
         $db = Db::get();
 
         for ($attempt = 0; $attempt < 5; $attempt++) {
@@ -800,6 +825,24 @@ class Plugin implements PluginInterface
         return $adapter->fetch($db->query($sql, Db::WRITE));
     }
 
+    /**
+     * 通过 Typecho 已配置的 WRITE 连接读取 option；不会创建额外数据库连接。
+     *
+     * @throws DbException
+     */
+    private static function primaryOptionRow(string $name, int $uid): ?array
+    {
+        $db = Db::get();
+        $adapter = $db->getAdapter();
+        $table = $adapter->quoteColumn($db->getPrefix() . 'options');
+        $sql = 'SELECT value FROM ' . $table
+            . ' WHERE name = ' . $adapter->quoteValue($name)
+            . ' AND user = ' . $uid
+            . ' LIMIT 1';
+
+        return $adapter->fetch($db->query($sql, Db::WRITE));
+    }
+
     public static function provisionAllUsers(): void
     {
         $db = Db::get();
@@ -813,8 +856,7 @@ class Plugin implements PluginInterface
     {
         $db = Db::get();
         $value = json_encode($config, JSON_UNESCAPED_SLASHES);
-        $exists = $db->fetchRow($db->select('name')->from('table.options')
-            ->where('name = ? AND user = 0', 'plugin:GAuthenticator')->limit(1));
+        $exists = self::primaryOptionRow('plugin:GAuthenticator', 0);
 
         if ($exists) {
             $db->query($db->update('table.options')->rows(['value' => $value])
@@ -1178,7 +1220,8 @@ class Plugin implements PluginInterface
         }
 
         [$uid, $token] = $parts;
-        $state = self::userConfig($uid, false);
+        /** 挑战属于认证状态，必须从主库读取，不能接受副本上的旧挑战。 */
+        $state = self::userConfig($uid, false, true);
         $challenge = self::challengeFromState($state, $uid, $token);
         if ($challenge === null) {
             self::deleteCookie(self::CHALLENGE_COOKIE);
