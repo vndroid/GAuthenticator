@@ -170,12 +170,14 @@ class Plugin implements PluginInterface
     {
         $user = User::alloc();
         $uid = (int) $user->uid;
-        $state = self::userConfig($uid, true);
+        $state = self::withUserConfigTransaction($uid, static function (array $state): array {
+            if (preg_match('/^[A-Z2-7]{16,128}$/D', $state['SetupSecret'])) {
+                return [null, $state];
+            }
 
-        if (!preg_match('/^[A-Z2-7]{16,128}$/D', $state['SetupSecret'])) {
             $state['SetupSecret'] = self::newSecret();
-            self::saveUserConfig($uid, $state);
-        }
+            return [$state, $state];
+        });
 
         $uri = self::otpAuthUri((string) $user->mail, $state['SetupSecret']);
         $enabled = 1 === (int) $state['SecretOn'];
@@ -227,48 +229,90 @@ class Plugin implements PluginInterface
 
         $user = User::alloc();
         $uid = (int) $user->uid;
-        $state = self::userConfig($uid, true);
-        $wasEnabled = 1 === (int) $state['SecretOn'];
         $enable = 1 == ($config['SecretOn'] ?? 0);
         $rotate = 1 == ($config['RotateSecret'] ?? 0);
-        $changedSecret = false;
+        $revokeDevices = $enable && 1 == ($config['RevokeDevices'] ?? 0);
+        $regenerateRecovery = $enable && 1 == ($config['RegenerateRecovery'] ?? 0);
+        $otp = (string) ($config['SecretCode'] ?? '');
+        $deviceCookie = Cookie::get(self::DEVICE_COOKIE);
+        $passwordHash = (string) $user->password;
 
-        if ((!$wasEnabled && $enable) || ($wasEnabled && $enable && $rotate)) {
-            $otp = (string) ($config['SecretCode'] ?? '');
-            $slice = self::matchTotpSlice($state['SetupSecret'], $otp, -1);
-            if ($slice === null) {
-                throw new PluginException(_t('新密钥的验证码校验失败，设置未保存'));
+        /**
+         * 必须在锁内重新读取并只修改目标字段。否则个人设置页打开后发生的
+         * TOTP 消费、挑战计数或可信设备更新，会被表单提交时的旧 JSON 覆盖。
+         * 回调只描述提交后的响应副作用，绝不在事务中发送或删除 Cookie。
+         */
+        $effects = self::withUserConfigTransaction(
+            $uid,
+            static function (array $state) use (
+                $enable,
+                $rotate,
+                $revokeDevices,
+                $regenerateRecovery,
+                $otp,
+                $deviceCookie,
+                $passwordHash
+            ): array {
+                $wasEnabled = 1 === (int) $state['SecretOn'];
+                $changedSecret = false;
+                $effects = [
+                    'recoveryCodes' => [],
+                    'deleteDeviceCookie' => false,
+                    'deleteSessionCookie' => false,
+                    'issueSessionToken' => false,
+                ];
+
+                if ((!$wasEnabled && $enable) || ($wasEnabled && $enable && $rotate)) {
+                    $slice = self::matchTotpSlice($state['SetupSecret'], $otp, -1);
+                    if ($slice === null) {
+                        throw new PluginException(_t('新密钥的验证码校验失败，设置未保存'));
+                    }
+
+                    [$hashes, $plainCodes] = self::generateRecoveryCodes();
+                    $state['SecretOn'] = 1;
+                    $state['SecretKey'] = $state['SetupSecret'];
+                    $state['SetupSecret'] = self::newSecret();
+                    $state['LastSlice'] = $slice;
+                    $state['TrustedDevices'] = [];
+                    $state['RecoveryCodes'] = $hashes;
+                    $effects['recoveryCodes'] = $plainCodes;
+                    $effects['deleteDeviceCookie'] = true;
+                    $effects['issueSessionToken'] = true;
+                    $changedSecret = true;
+                } elseif ($wasEnabled && !$enable) {
+                    $state = self::defaultUserConfig();
+                    $state['SetupSecret'] = self::newSecret();
+                    $effects['deleteDeviceCookie'] = true;
+                    $effects['deleteSessionCookie'] = true;
+                }
+
+                if ($revokeDevices) {
+                    $state = self::keepCurrentDeviceOnly($state, $deviceCookie, $passwordHash);
+                }
+
+                if ($regenerateRecovery && !$changedSecret) {
+                    [$hashes, $plainCodes] = self::generateRecoveryCodes();
+                    $state['RecoveryCodes'] = $hashes;
+                    $effects['recoveryCodes'] = $plainCodes;
+                }
+
+                return [$state, $effects];
             }
+        );
 
-            [$hashes, $plainCodes] = self::generateRecoveryCodes();
-            $state['SecretOn'] = 1;
-            $state['SecretKey'] = $state['SetupSecret'];
-            $state['SetupSecret'] = self::newSecret();
-            $state['LastSlice'] = $slice;
-            $state['TrustedDevices'] = [];
-            $state['RecoveryCodes'] = $hashes;
-            self::rememberRecoveryCodes($plainCodes);
+        /** 数据已提交后再改变浏览器状态，事务失败不会留下半生效的 Cookie。 */
+        if ($effects['recoveryCodes']) {
+            self::rememberRecoveryCodes($effects['recoveryCodes']);
+        }
+        if ($effects['deleteDeviceCookie']) {
             self::deleteCookie(self::DEVICE_COOKIE);
-            self::issueSessionToken($uid, (string) $user->authCode, 0);
-            $changedSecret = true;
-        } elseif ($wasEnabled && !$enable) {
-            $state = self::defaultUserConfig();
-            $state['SetupSecret'] = self::newSecret();
-            self::deleteCookie(self::DEVICE_COOKIE);
+        }
+        if ($effects['deleteSessionCookie']) {
             self::deleteCookie(self::SESSION_COOKIE);
         }
-
-        if ($enable && 1 == ($config['RevokeDevices'] ?? 0)) {
-            $state = self::keepCurrentDeviceOnly($state, Cookie::get(self::DEVICE_COOKIE), (string) $user->password);
+        if ($effects['issueSessionToken']) {
+            self::issueSessionToken($uid, (string) $user->authCode, 0);
         }
-
-        if ($enable && !$changedSecret && 1 == ($config['RegenerateRecovery'] ?? 0)) {
-            [$hashes, $plainCodes] = self::generateRecoveryCodes();
-            $state['RecoveryCodes'] = $hashes;
-            self::rememberRecoveryCodes($plainCodes);
-        }
-
-        self::saveUserConfig($uid, $state);
     }
 
     /**
