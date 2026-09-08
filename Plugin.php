@@ -26,7 +26,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  *
  * @package GAuthenticator
  * @author Vex
- * @version 0.3.0
+ * @version 0.3.1
  * @link https://github.com/vndroid/GAuthenticator
  */
 class Plugin implements PluginInterface
@@ -69,6 +69,15 @@ class Plugin implements PluginInterface
 
     /** 恢复码仅显示一次时使用的加密 cookie */
     private const RECOVERY_FLASH_COOKIE = '__typecho_GAuthenticator_r';
+
+    /** consumeTotp 的返回值：码不对 */
+    public const TOTP_INVALID = 0;
+
+    /** consumeTotp 的返回值：码正确且本次消费成功 */
+    public const TOTP_OK = 1;
+
+    /** consumeTotp 的返回值：码正确但该时间片已经用过 */
+    public const TOTP_REUSED = 2;
 
     /** 每个请求只执行一次旧全局配置清理 */
     private static bool $globalMigrated = false;
@@ -263,7 +272,7 @@ class Plugin implements PluginInterface
                 ];
 
                 if ((!$wasEnabled && $enable) || ($wasEnabled && $enable && $rotate)) {
-                    $slice = self::matchTotpSlice($state['SetupSecret'], $otp, -1);
+                    $slice = self::matchTotpSlice($state['SetupSecret'], $otp);
                     if ($slice === null) {
                         throw new PluginException(_t('新密钥的验证码校验失败，设置未保存'));
                     }
@@ -730,11 +739,19 @@ class Plugin implements PluginInterface
                         throw new PluginException(_t('无法保存两步验证配置'));
                     }
 
-                    $updated = $db->query($db->update('table.options')->rows(['value' => $value])
-                        ->where('name = ? AND user = ? AND value = ?', self::PERSONAL_OPTION, $uid, (string) $row['value']));
-                    if (1 !== (int) $updated) {
-                        self::rollbackTransaction($db);
-                        continue;
+                    /**
+                     * 值没变就不要发 UPDATE。
+                     * Typecho 的 Pdo_Mysql 没有设 PDO::MYSQL_ATTR_FOUND_ROWS，
+                     * 所以 MySQL 的 rowCount 返回「实际改变的行数」——写回相同内容会得到 0，
+                     * 被这里的乐观锁误判成并发冲突，重试耗尽后抛异常(SQLite 返回 1，测不出来)。
+                     */
+                    if ($value !== (string) $row['value']) {
+                        $updated = $db->query($db->update('table.options')->rows(['value' => $value])
+                            ->where('name = ? AND user = ? AND value = ?', self::PERSONAL_OPTION, $uid, (string) $row['value']));
+                        if (1 !== (int) $updated) {
+                            self::rollbackTransaction($db);
+                            continue;
+                        }
                     }
                 }
 
@@ -850,8 +867,13 @@ class Plugin implements PluginInterface
         ], '', '&', PHP_QUERY_RFC3986);
     }
 
-    /** 返回匹配且未使用的时间片。 */
-    public static function matchTotpSlice(string $secret, string $otp, int $lastSlice): ?int
+    /**
+     * 返回容差窗口内匹配的时间片。
+     *
+     * 这里只回答「这个码对不对」，不判断有没有用过 —— 是否重放交给 consumeTotp，
+     * 这样才能把「码错了」和「码对但已经用过」区分开。
+     */
+    public static function matchTotpSlice(string $secret, string $otp): ?int
     {
         if ($secret === '' || !preg_match('/^\d{6}$/D', $otp)) {
             return null;
@@ -870,7 +892,7 @@ class Plugin implements PluginInterface
         for ($i = -$discrepancy; $i <= $discrepancy; $i++) {
             $candidate = $nowSlice + $i;
             $equal = hash_equals((string) $authenticator->getCode($secret, $candidate), $otp);
-            if ($equal && $candidate > $lastSlice) {
+            if ($equal) {
                 $matched = $candidate;
             }
         }
@@ -878,21 +900,33 @@ class Plugin implements PluginInterface
         return $matched;
     }
 
-    /** 在行锁事务中检查并写回 LastSlice，保证同一时间片只能成功一次。 */
-    public static function consumeTotp(int $uid, string $otp): bool
+    /**
+     * 在行锁事务中检查并写回 LastSlice，保证同一时间片只能成功一次。
+     *
+     * 返回 TOTP_OK / TOTP_REUSED / TOTP_INVALID。区分出 REUSED 是有必要的：
+     * 验证器 30 秒内一直显示同一个数字，用户刚绑定完(或刚登录过)马上再登，
+     * 手上那个码必然已经被消费掉。若和「码错了」混为一谈，用户会看到莫名其妙的
+     * 「令牌错误」并反复重试，5 次就把自己锁 10 分钟。
+     */
+    public static function consumeTotp(int $uid, string $otp): int
     {
-        return (bool) self::withUserConfigTransaction($uid, static function (array $state) use ($otp): array {
+        return (int) self::withUserConfigTransaction($uid, static function (array $state) use ($otp): array {
             if (1 !== (int) $state['SecretOn']) {
-                return [null, false];
+                return [null, self::TOTP_INVALID];
             }
 
-            $slice = self::matchTotpSlice($state['SecretKey'], $otp, (int) $state['LastSlice']);
+            $slice = self::matchTotpSlice($state['SecretKey'], $otp);
             if ($slice === null) {
-                return [null, false];
+                return [null, self::TOTP_INVALID];
+            }
+
+            /** 码是对的，但这个时间片已经用过：拒绝登录，但这不是一次猜测。 */
+            if ($slice <= (int) $state['LastSlice']) {
+                return [null, self::TOTP_REUSED];
             }
 
             $state['LastSlice'] = $slice;
-            return [$state, true];
+            return [$state, self::TOTP_OK];
         });
     }
 

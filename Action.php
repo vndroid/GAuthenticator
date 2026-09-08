@@ -78,12 +78,22 @@ class Action extends Widget implements ActionInterface
         $uid = intval($challenge['uid']);
 
         /** OTP 和恢复码共用统一回执，不泄露使用的是哪种凭据。 */
-        $validTotp = Plugin::consumeTotp($uid, $code);
+        $totp = Plugin::consumeTotp($uid, $code);
+
+        /**
+         * 码正确但这个时间片已经用过：说明用户手上就是有效的验证器，
+         * 只是验证器还没跳到下一个数字。这不是一次猜测，不能计入锁定，
+         * 否则刚绑定完的用户连按几次就会把自己锁 10 分钟。
+         */
+        if (Plugin::TOTP_REUSED === $totp) {
+            $this->finish(false, _t('这个验证码已经用过了，请等验证器显示下一个再试'));
+        }
+
         $usedRecoveryCode = false;
-        if (!$validTotp) {
+        if (Plugin::TOTP_OK !== $totp) {
             $usedRecoveryCode = Plugin::consumeRecoveryCode($uid, $code);
         }
-        if (!$validTotp && !$usedRecoveryCode) {
+        if (Plugin::TOTP_OK !== $totp && !$usedRecoveryCode) {
             $lockedUntil = Plugin::recordSecondFactorFailure($uid);
             if ($lockedUntil > time()) {
                 $minutes = max(1, (int) ceil(($lockedUntil - time()) / 60));
