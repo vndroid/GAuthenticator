@@ -604,9 +604,17 @@ class Plugin implements PluginInterface
         }
     }
 
+    /**
+     * $primary 同时决定「读哪条连接」和「缺行时补不补」。
+     *
+     * 两者必须一致：展示路径读的是可能落后的副本，如果还允许它补建行，
+     * saveUserConfig 会拿默认值去覆盖主库上真实的 2FA 状态（密钥、恢复码、
+     * 可信设备一起丢），等于静默关掉这个账号的两步验证。
+     * 补建行本来也只需要发生在认证路径上。
+     */
     public static function userIsEnabled(int $uid, bool $primary = true): bool
     {
-        $state = self::userConfig($uid, true, $primary);
+        $state = self::userConfig($uid, $primary, $primary);
         return 1 === (int) $state['SecretOn'] && $state['SecretKey'] !== '';
     }
 
