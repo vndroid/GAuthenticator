@@ -12,6 +12,7 @@ use Typecho\Widget\Exception as WidgetException;
 use Typecho\Widget\Helper\Form;
 use Typecho\Widget\Helper\Form\Element\Text;
 use Typecho\Widget\Helper\Form\Element\Radio;
+use Typecho\Widget\Helper\Form\Element\Select;
 use Typecho\Widget\Helper\Form\Element\Textarea;
 use Utils\Helper;
 use Widget\Options;
@@ -26,12 +27,18 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  *
  * @package GAuthenticator
  * @author Vex
- * @version 0.3.1
+ * @version 0.3.2
  * @since 1.2.0
  * @link https://github.com/vndroid/GAuthenticator
  */
 class Plugin implements PluginInterface
 {
+    /** 允许的 TOTP 容差倍率(每倍 30 秒)，2 以上仅为特殊场景保留 */
+    public const TOLERANCE_CHOICES = [1, 2, 3];
+
+    /** 容差倍率的推荐值，同时也是所有非法取值的收敛目标 */
+    public const TOLERANCE_DEFAULT = 1;
+
     /** 待验证挑战的有效期(秒) */
     public const CHALLENGE_TTL = 300;
 
@@ -180,7 +187,20 @@ class Plugin implements PluginInterface
      */
     public static function config(Form $form): void
     {
-        $element = new Text('SecretTime', null, '1', _t('容差倍率'), '容差时间，输入的值为30秒的倍数（如果输入1，那么容差时间为 1 × 30秒 = 30秒），只接受 0-2，推荐 1');
+        $element = new Select(
+            'SecretTime',
+            [
+                '1' => '1 × 30 秒（推荐）',
+                '2' => '2 × 30 秒',
+                '3' => '3 × 30 秒（不推荐）',
+            ],
+            (string) self::TOLERANCE_DEFAULT,
+            _t('容差倍率'),
+            '允许验证码与服务器时间相差几个 30 秒周期。推荐保持 1，它已经能吸收输入验证码的几秒延迟；'
+            . '只有在服务器长期不校时、确实存在明显时钟漂移时才调大。'
+            . '每调大一档，盲猜命中率和验证码被截获后的可用时间都会同步上升，因此不推荐 2 以上。'
+        );
+        $element->addRule('enum', _t('容差倍率只能是 1、2 或 3'), array_map('strval', self::TOLERANCE_CHOICES));
         $form->addInput($element);
 
         $element = new Radio(
@@ -213,7 +233,7 @@ class Plugin implements PluginInterface
     public static function configHandle(array $config, bool $is_init): void
     {
         self::saveGlobalConfig([
-            'SecretTime'   => (string) self::discrepancy($config['SecretTime'] ?? 1),
+            'SecretTime'   => (string) self::discrepancy($config['SecretTime'] ?? self::TOLERANCE_DEFAULT),
             'SecretXmlRpc' => 1 == ($config['SecretXmlRpc'] ?? 0) ? '1' : '0',
         ]);
     }
@@ -678,7 +698,7 @@ class Plugin implements PluginInterface
     /** 容差倍率同样属于验证参数，必须来自主库。 */
     private static function tolerance(): int
     {
-        return self::discrepancy(self::primaryGlobalConfig()['SecretTime'] ?? 1);
+        return self::discrepancy(self::primaryGlobalConfig()['SecretTime'] ?? self::TOLERANCE_DEFAULT);
     }
 
     /**
@@ -961,7 +981,10 @@ class Plugin implements PluginInterface
         self::$globalConfigCache = null;
     }
 
-    /** 第一次运行新版本时从数据库中实际移除旧的全站共享密钥。 */
+    /**
+     * 第一次运行新版本时从数据库中实际移除旧的全站共享密钥，
+     * 并把不在允许范围内的容差倍率就地收敛为推荐值。
+     */
     private static function migrateGlobalConfig(): void
     {
         if (self::$globalMigrated) {
@@ -977,11 +1000,26 @@ class Plugin implements PluginInterface
              * 同一请求里再去读就什么都看不到了。
              */
             $values = self::primaryGlobalConfig();
-            if (!array_intersect(['SecretKey', 'SecretQRInfo', 'SecretCode', 'SecretOn'], array_keys($values))) {
+            $legacyKeys = (bool) array_intersect(['SecretKey', 'SecretQRInfo', 'SecretCode', 'SecretOn'], array_keys($values));
+
+            /**
+             * 0.3.2 之前容差是 clamp(0,2)，所以库里可能留着 0（只认当前时间片，
+             * 用户输码稍慢就会失败）或别的越界值。tolerance() 读的时候已经会收敛，
+             * 这里再把库里那份也一并写正，免得设置页显示的和实际生效的长期对不上。
+             */
+            $needsToleranceFix = array_key_exists('SecretTime', $values)
+                && (string) $values['SecretTime'] !== (string) self::discrepancy($values['SecretTime']);
+
+            /**
+             * 没有这一行(全新安装、还没保存过设置)时什么都不写。
+             * 这个方法挂在 userConfig() 上、几乎每个请求都会经过，
+             * 在读写分离下平白多一次主库写没有意义 —— tolerance() 读取时本来就会兜底到推荐值。
+             */
+            if (!$legacyKeys && !$needsToleranceFix) {
                 return;
             }
             self::saveGlobalConfig([
-                'SecretTime'   => (string) self::discrepancy($values['SecretTime'] ?? 1),
+                'SecretTime'   => (string) self::discrepancy($values['SecretTime'] ?? self::TOLERANCE_DEFAULT),
                 'SecretXmlRpc' => 1 == ($values['SecretXmlRpc'] ?? 0) ? '1' : '0',
             ]);
         } catch (\Throwable $e) {
@@ -1211,14 +1249,28 @@ class Plugin implements PluginInterface
     }
 
     /**
-     * 容差只接受 0-2
+     * 容差只接受 1、2、3，其余一律收敛为推荐值 1
+     *
+     * 这里刻意用白名单而不是 clamp。理由是失败模式：
+     * clamp 会把打错的字（intval('abc') === 0）压成 0，也就是最严格的那一档，
+     * 而 0 意味着只认当前这一个时间片 —— 用户看到码再输入完这几秒里一旦跨过
+     * 30 秒边界就会失败，实测「读码后 5 秒提交」的失败率是 5/30；服务器和手机
+     * 差满 30 秒则是 100% 登不进去，连绑定都做不了。这种间歇性故障没人查得出来。
+     * 白名单让所有非法输入落到 1（RFC 6238 建议的一个步长），失败模式从
+     * 「悄悄变成最脆的配置」变成「悄悄回到推荐配置」。
+     *
+     * 上限 3 是为极端场景（长期不校时的服务器）保留的，不推荐：
+     * 每宽一片，盲猜命中率就从 (2d+1)/10^6 线性上升，验证码被截获后的可用时间
+     * 也按 (d+1)*30 秒线性变长。
      *
      * @param mixed $value
      * @return int
      */
     public static function discrepancy($value): int
     {
-        return max(0, min(2, intval($value)));
+        $value = intval($value);
+
+        return in_array($value, self::TOLERANCE_CHOICES, true) ? $value : self::TOLERANCE_DEFAULT;
     }
 
     /**
