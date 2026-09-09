@@ -43,7 +43,16 @@ include $gaAdminDir . 'menu.php';
     <div class="body container">
         <?php include $gaAdminDir . 'page-title.php'; ?>
         <div class="row typecho-page-main">
-            <div class="col-mb-12 col-tb-8 col-tb-offset-2 typecho-content-panel" role="form">
+            <?php
+            /**
+             * 不要加 col-tb-offset-*。offset 是「设置」那几页（options-general /
+             * options-plugin）居中排版用的，控制台下面所有页面的正文列都从容器左边缘
+             * 起排（实测 x=20，与页面标题的 x=30 对齐）；加了 offset-2 会把正文推到
+             * x=213，左边空出一大块，跟同级菜单里的其它页明显不齐。
+             * col-tb-8 与「备份」页一致。
+             */
+            ?>
+            <div class="col-mb-12 col-tb-8 typecho-content-panel" role="form">
                 <section>
                     <h3><?php _e('两步验证'); ?></h3>
                     <p class="description">

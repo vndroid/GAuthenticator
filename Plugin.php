@@ -327,8 +327,9 @@ class Plugin implements PluginInterface
         $description = ($enabled
             ? '当前账号已启用 2FA。下方二维码是新的候选密钥，只有选择「轮换密钥」并用新验证码确认后才会生效。'
             : '当前账号尚未绑定 2FA，默认允许直接登录。请扫描二维码，再输入验证码并选择开启。')
-            . '<div style="font-weight:bold;text-align:center;padding:20px 0">'
-            . '<div style="width:260px;height:260px;margin:15px auto;padding:15px;background:#fff"><span id="ga-personal-qrcode"></span></div>'
+            /** 二维码跟着表单左对齐，不再居中：正文列已经是左起排版，居中会让它孤零零飘在中间。 */
+            . '<div style="font-weight:bold;padding:20px 0">'
+            . '<div style="width:260px;height:260px;margin:15px 0;padding:15px;background:#fff"><span id="ga-personal-qrcode"></span></div>'
             . '</div><script>(function(){var load=function(){var run=function(){'
             . '$("#ga-personal-qrcode").empty().qrcode({width:260,height:260,text:' . json_encode($uri) . '});};'
             . 'if($.fn.qrcode){run();}else{$.getScript(' . json_encode(Options::alloc()->pluginUrl . '/GAuthenticator/jquery.qrcode.min.js') . ',run);}};'
