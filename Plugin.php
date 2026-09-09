@@ -486,12 +486,19 @@ class Plugin implements PluginInterface
         /**
          * 做成链接指向绑定面板。「当前账号未启用 2FA」是全站最该点得动的一句话，
          * 之前它只是个 span，看到的人没有任何一跳能走到绑定页。
+         *
+         * 配色必须留在内层 span 上，不能把 class 直接挂到 <a> 上：
+         * 后台样式里有 `.typecho-head-nav a{color:#BBB}`，权重(0,1,1)高于
+         * `.success{color:#264409}` / `.error{color:#8A1F11}`(0,1,0)，
+         * 挂在 a 上会被压成浅灰字配浅绿/浅红底，几乎看不清；
+         * hover 时更是 `.typecho-head-nav a:hover{color:#fff}` 白字配浅底。
+         * span 不匹配那条选择器，配色和内边距都能保持原样。
          */
         printf(
-            '<a href="%s" class="message %s" title="%s">%s</a>',
+            '<a href="%s" title="%s"><span class="message %s">%s</span></a>',
             htmlspecialchars(self::panelUrl(), ENT_QUOTES),
-            $enabled ? 'success' : 'error',
             htmlspecialchars(_t('前往 控制台 → 两步认证'), ENT_QUOTES),
+            $enabled ? 'success' : 'error',
             htmlspecialchars($enabled ? _t('2FA 已启用') : _t('当前账号未启用 2FA'), ENT_QUOTES)
         );
     }
