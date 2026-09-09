@@ -10,12 +10,14 @@ use Typecho\Cookie;
 use Typecho\Router;
 use Typecho\Widget\Exception as WidgetException;
 use Typecho\Widget\Helper\Form;
+use Typecho\Widget\Helper\Layout;
 use Typecho\Widget\Helper\Form\Element\Text;
 use Typecho\Widget\Helper\Form\Element\Radio;
 use Typecho\Widget\Helper\Form\Element\Select;
 use Typecho\Widget\Helper\Form\Element\Textarea;
 use Utils\Helper;
 use Widget\Options;
+use Widget\Security;
 use Widget\User;
 
 if (!defined('__TYPECHO_ROOT_DIR__')) {
@@ -27,7 +29,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  *
  * @package GAuthenticator
  * @author Vex
- * @version 0.3.2
+ * @version 0.3.3
  * @since 1.2.0
  * @link https://github.com/vndroid/GAuthenticator
  */
@@ -38,6 +40,12 @@ class Plugin implements PluginInterface
 
     /** 容差倍率的推荐值，同时也是所有非法取值的收敛目标 */
     public const TOLERANCE_DEFAULT = 1;
+
+    /** 「控制台 → 两步认证」面板，相对于插件目录的父级 */
+    public const PANEL_FILE = 'GAuthenticator/Panel.php';
+
+    /** 面板表单的提交路由，只能用字母（路由规则是 /action/[action:alpha]） */
+    public const SETUP_ACTION = 'GAuthenticatorSetup';
 
     /** 待验证挑战的有效期(秒) */
     public const CHALLENGE_TTL = 300;
@@ -115,6 +123,15 @@ class Plugin implements PluginInterface
         }
 
         Helper::addAction('GAuthenticator', __NAMESPACE__ . '\Action');
+        Helper::addAction(self::SETUP_ACTION, __NAMESPACE__ . '\Setup');
+
+        /**
+         * 绑定入口独立成「控制台 → 两步认证」。
+         * 等级取 subscriber：每个人绑的都是自己的密钥，不能只给管理员看。
+         * addPanel 是追加语义，先移除一次避免重复启用时留下两条同样的菜单。
+         */
+        Helper::removePanel(1, self::PANEL_FILE);
+        Helper::addPanel(1, self::PANEL_FILE, _t('两步认证'), _t('两步认证'), 'subscriber');
 
         \Typecho\Plugin::factory('admin/menu.php')->navBar = [self::class, 'authenticatorSafe'];
         \Typecho\Plugin::factory('admin/common.php')->begin = [self::class, 'authenticatorVerification'];
@@ -128,9 +145,15 @@ class Plugin implements PluginInterface
         /** 为存量用户补齐个人配置。旧的全局密钥不会迁移，未绑定用户默认放行。 */
         self::provisionAllUsers();
 
-        $configLink = '<a href="' . Helper::options()->adminUrl('options-plugin.php?config=' . basename(__DIR__), true) . '">' . _t('前往设置') . '</a>';
+        /**
+         * 这两个链接指向的是两件不同的事，文字必须分得清：
+         * 旧版本这里只有一个「前往设置」，指向站点策略页——那一页没有二维码，
+         * 照着它走的人会以为绑定功能不见了。
+         */
+        $bindLink = '<a href="' . self::panelUrl() . '">' . _t('去绑定（控制台 → 两步认证）') . '</a>';
+        $configLink = '<a href="' . Helper::options()->adminUrl('options-plugin.php?config=' . basename(__DIR__), true) . '">' . _t('站点策略设置') . '</a>';
 
-        return _t('两步验证已按用户启用，请让各用户在个人设置中自行绑定。') . ' ' . $configLink;
+        return _t('两步验证已按用户启用，每位用户需自行绑定。') . ' ' . $bindLink . ' &bull; ' . $configLink;
     }
 
     /**
@@ -176,6 +199,8 @@ class Plugin implements PluginInterface
     public static function deactivate(): string
     {
         Helper::removeAction('GAuthenticator');
+        Helper::removeAction(self::SETUP_ACTION);
+        Helper::removePanel(1, self::PANEL_FILE);
 
         return _t('两步验证已关闭');
     }
@@ -187,6 +212,20 @@ class Plugin implements PluginInterface
      */
     public static function config(Form $form): void
     {
+        /**
+         * 这一页只有站点级策略，绑定入口在别处。不写清楚的话，
+         * 管理员点开「设置 → GAuthenticator」看不到二维码，
+         * 第一反应就是「绑定功能没了」。
+         */
+        $notice = new Layout('div');
+        $notice->setAttribute('class', 'message notice');
+        $notice->html(
+            _t('本页是<strong>站点级策略</strong>，对全站生效。')
+            . _t('绑定验证器、轮换密钥、恢复码和可信设备属于每位用户自己的设置，请前往 ')
+            . '<a href="' . self::panelUrl() . '">' . _t('控制台 → 两步认证') . '</a>。'
+        );
+        $form->addItem($notice);
+
         $element = new Select(
             'SecretTime',
             [
@@ -245,6 +284,33 @@ class Plugin implements PluginInterface
      */
     public static function personalConfig(Form $form): void
     {
+        /**
+         * 故意留空。PluginInterface 要求存在这个方法，但 Typecho 的 parseInfo
+         * 是靠「方法体里有没有东西」来判断要不要在个人设置页渲染这一节的，
+         * 空实现＝个人设置页不再出现 GAuthenticator。绑定界面已经移到
+         * 「控制台 → 两步认证」(Panel.php)，由 setupForm() 构建。
+         *
+         * 同时这也让核心的 Widget\Users\Profile::updatePersonal() 不再接管保存，
+         * 保存改走 Setup 这个自有 action —— 核心那条路径写死了保存后跳回
+         * profile.php，面板搬走之后会把人跳丢。
+         */
+    }
+
+    /**
+     * 「控制台 → 两步认证」面板上的表单
+     *
+     * 注意：这个方法有副作用——它会消费「新恢复码只显示一次」的一次性 Cookie，
+     * 所以每次请求最多只能调用一次，且必须在开始输出 HTML 之前调用。
+     *
+     * @return Form
+     * @throws PluginException|DbException
+     */
+    public static function setupForm(): Form
+    {
+        $form = new Form(self::setupAction(), Form::POST_METHOD);
+        $form->setAttribute('name', 'GAuthenticator');
+        $form->setAttribute('id', 'GAuthenticator');
+
         $user = User::alloc();
         $uid = (int) $user->uid;
         $state = self::withUserConfigTransaction($uid, static function (array $state): array {
@@ -285,11 +351,31 @@ class Plugin implements PluginInterface
             $form->addInput($view);
         }
 
-        /** Typecho 会自动把个人 option 的每个字段灌回表单；这里只暴露安全的表单字段。 */
-        Options::alloc()->{self::PERSONAL_OPTION} = json_encode([
-            'SetupSecret' => $state['SetupSecret'],
-            'SecretOn'    => $enabled ? '1' : '0',
-        ]);
+        $submit = new Form\Element\Submit('submit', null, _t('保存设置'));
+        $submit->input->setAttribute('class', 'btn primary');
+        $form->addItem($submit);
+
+        return $form;
+    }
+
+    /**
+     * 面板表单的提交目标（带 CSRF 令牌）
+     *
+     * @return string
+     */
+    public static function setupAction(): string
+    {
+        return Security::alloc()->getIndex('/action/' . self::SETUP_ACTION);
+    }
+
+    /**
+     * 「控制台 → 两步认证」面板地址
+     *
+     * @return string
+     */
+    public static function panelUrl(): string
+    {
+        return Helper::options()->adminUrl('extending.php?panel=' . urlencode(self::PANEL_FILE), true);
     }
 
     /**
@@ -297,13 +383,8 @@ class Plugin implements PluginInterface
      *
      * @throws PluginException|DbException
      */
-    public static function personalConfigHandle(array $config, bool $is_init): void
+    public static function handleSetup(array $config): void
     {
-        if ($is_init) {
-            self::provisionAllUsers();
-            return;
-        }
-
         $user = User::alloc();
         $uid = (int) $user->uid;
         $enable = 1 == ($config['SecretOn'] ?? 0);
@@ -400,11 +481,19 @@ class Plugin implements PluginInterface
     {
         $user = User::alloc();
         /** 导航栏只是状态展示，不参与放行判定，可以使用普通读连接。 */
-        if ($user->hasLogin() && self::userIsEnabled((int) $user->uid, false)) {
-            echo '<span class="message success">' . htmlspecialchars('2FA 已启用') . '</span>';
-        } else {
-            echo '<span class="message error">' . htmlspecialchars('当前账号未启用 2FA') . '</span>';
-        }
+        $enabled = $user->hasLogin() && self::userIsEnabled((int) $user->uid, false);
+
+        /**
+         * 做成链接指向绑定面板。「当前账号未启用 2FA」是全站最该点得动的一句话，
+         * 之前它只是个 span，看到的人没有任何一跳能走到绑定页。
+         */
+        printf(
+            '<a href="%s" class="message %s" title="%s">%s</a>',
+            htmlspecialchars(self::panelUrl(), ENT_QUOTES),
+            $enabled ? 'success' : 'error',
+            htmlspecialchars(_t('前往 控制台 → 两步认证'), ENT_QUOTES),
+            htmlspecialchars($enabled ? _t('2FA 已启用') : _t('当前账号未启用 2FA'), ENT_QUOTES)
+        );
     }
 
     // ------------------------------------------------------------------
