@@ -27,6 +27,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * @package GAuthenticator
  * @author Vex
  * @version 0.3.1
+ * @since 1.2.0
  * @link https://github.com/vndroid/GAuthenticator
  */
 class Plugin implements PluginInterface
@@ -85,6 +86,12 @@ class Plugin implements PluginInterface
     /** 每个请求只从主库读一次全局策略配置 */
     private static ?array $globalConfigCache = null;
 
+    /** 运行本插件所需的最低 PHP 版本 */
+    public const MIN_PHP_VERSION = '8.2.0';
+
+    /** 运行本插件所必需的扩展 */
+    public const REQUIRED_EXTENSIONS = ['openssl'];
+
     /**
      * 激活插件方法,如果激活失败,直接抛出异常
      *
@@ -93,6 +100,9 @@ class Plugin implements PluginInterface
      */
     public static function activate(): string
     {
+        /** 先检查运行环境，缺什么在这里说清楚，不要等到用户绑定到一半才崩 */
+        self::checkEnvironment();
+
         if (!str_ends_with(trim(__DIR__, '/\\'), 'GAuthenticator')) {
             throw new PluginException(_t('插件目录名必须为 GAuthenticator，且首字母大写，请检查插件目录名是否正确'));
         }
@@ -114,6 +124,41 @@ class Plugin implements PluginInterface
         $configLink = '<a href="' . Helper::options()->adminUrl('options-plugin.php?config=' . basename(__DIR__), true) . '">' . _t('前往设置') . '</a>';
 
         return _t('两步验证已按用户启用，请让各用户在个人设置中自行绑定。') . ' ' . $configLink;
+    }
+
+    /**
+     * 启用前的环境检查
+     *
+     * openssl 用来加密「只显示一次」的恢复码信封，缺了它并不会被优雅降级：
+     * rememberRecoveryCodes() 是在事务提交之后才调用的，届时 2FA 已经开启、
+     * 恢复码散列已入库，但明文永远不会显示出来 —— 用户会得到一个
+     * 「有 2FA 却没有恢复码」的账号。所以必须在启用这一步就拦住。
+     *
+     * @throws PluginException
+     */
+    public static function checkEnvironment(): void
+    {
+        if (version_compare(PHP_VERSION, self::MIN_PHP_VERSION, '<')) {
+            throw new PluginException(_t(
+                '本插件需要 PHP %s 或更高版本，当前为 %s',
+                self::MIN_PHP_VERSION,
+                PHP_VERSION
+            ));
+        }
+
+        $missing = [];
+        foreach (self::REQUIRED_EXTENSIONS as $extension) {
+            if (!extension_loaded($extension)) {
+                $missing[] = $extension;
+            }
+        }
+
+        if ($missing) {
+            throw new PluginException(_t(
+                '本插件需要 %s 扩展（用于加密只显示一次的恢复码），请先在 PHP 中启用',
+                implode('、', $missing)
+            ));
+        }
     }
 
     /**
