@@ -497,12 +497,17 @@ class Plugin implements PluginInterface
          *
          * 同一条规则还带着 `padding:0 20px; height:36px; line-height:36px`，
          * 会在彩色小块外面撑出左右各 21px 的深色导航底（实测 89px 的块被套进
-         * 131px 的 a 里），看起来像给徽标加了个黑框。所以这里把 a 的盒模型清掉，
-         * 让它退化成一个只负责点击的透明外壳，彩色块自己贴满整行。
+         * 131px 的 a 里），看起来像给徽标加了个黑框。所以这里把 a 的盒模型清掉。
+         *
+         * 清掉 padding 之后还差一步：span 默认是 display:inline，它的背景盒是
+         * 按行盒算的，会落在 y=-8..28 这种位置——上面被导航条切掉 8px，下面剩一条
+         * 8px 的深色空隙（实测 kane 那一项是 0..36，徽标却是 -8..28）。
+         * 所以 a 与 span 都用 flex：a 作为 li 的弹性项被拉到整行高，
+         * span 再铺满 a 并把文字垂直居中，实测上下缺口都是 0。
          */
         printf(
-            '<a href="%s" title="%s" style="padding:0;border:0;height:auto;line-height:inherit">'
-            . '<span class="message %s">%s</span></a>',
+            '<a href="%s" title="%s" style="padding:0;border:0;display:flex">'
+            . '<span class="message %s" style="display:flex;align-items:center">%s</span></a>',
             htmlspecialchars(self::panelUrl(), ENT_QUOTES),
             htmlspecialchars(_t('前往 控制台 → 两步认证'), ENT_QUOTES),
             $enabled ? 'success' : 'error',
