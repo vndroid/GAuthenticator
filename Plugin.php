@@ -485,34 +485,23 @@ class Plugin implements PluginInterface
         $enabled = $user->hasLogin() && self::userIsEnabled((int) $user->uid, false);
 
         /**
-         * 做成链接指向绑定面板。「当前账号未启用 2FA」是全站最该点得动的一句话，
-         * 之前它只是个 span，看到的人没有任何一跳能走到绑定页。
+         * 这里只输出一个裸 span，用 Typecho 自带的 .message/.success/.error，
+         * 一条样式覆盖都不要加——0.1.0 起就是这个写法。
          *
-         * 配色必须留在内层 span 上，不能把 class 直接挂到 <a> 上：
-         * 后台样式里有 `.typecho-head-nav a{color:#BBB}`，权重(0,1,1)高于
-         * `.success{color:#264409}` / `.error{color:#8A1F11}`(0,1,0)，
-         * 挂在 a 上会被压成浅灰字配浅绿/浅红底，几乎看不清；
-         * hover 时更是 `.typecho-head-nav a:hover{color:#fff}` 白字配浅底。
-         * span 不匹配那条选择器，配色和内边距都能保持原样。
+         * 曾经把它改成指向绑定面板的 <a>，结果连着踩了四个坑：后台有一条
+         * `.typecho-head-nav a{padding:0 20px;height:36px;line-height:36px;color:#BBB}`
+         * 对导航里的每个 a 生效，四个声明各坏一次（字被压成浅灰、左右多出深色内边距、
+         * 行内背景盒错位露出下缘、行被撑高时不跟着长），要靠十来条内联样式才压得住。
+         * 而绑定入口已经有三条路可走（控制台菜单里的「两步认证」、插件设置页顶部的指引、
+         * 启用插件时的「去绑定」链接），不值得为此把全站样式最脆的一处放在这儿。
          *
-         * 同一条规则还带着 `padding:0 20px; height:36px; line-height:36px`，
-         * 会在彩色小块外面撑出左右各 21px 的深色导航底（实测 89px 的块被套进
-         * 131px 的 a 里），看起来像给徽标加了个黑框。所以这里把 a 的盒模型清掉。
-         *
-         * 清掉 padding 之后还差一步：span 默认是 display:inline，它的背景盒是
-         * 按行盒算的，会落在 y=-8..28 这种位置——上面被导航条切掉 8px，下面剩一条
-         * 8px 的深色空隙（实测 kane 那一项是 0..36，徽标却是 -8..28）。
-         * 所以 a 与 span 都用 flex：a 作为 li 的弹性项被拉到整行高，
-         * span 再铺满 a 并把文字垂直居中，实测上下缺口都是 0。
+         * 结论：这个元素保持无样式。要改成可点击之前，先想清楚上面那条规则。
          */
-        printf(
-            '<a href="%s" title="%s" style="padding:0;border:0;display:flex">'
-            . '<span class="message %s" style="display:flex;align-items:center">%s</span></a>',
-            htmlspecialchars(self::panelUrl(), ENT_QUOTES),
-            htmlspecialchars(_t('前往 控制台 → 两步认证'), ENT_QUOTES),
-            $enabled ? 'success' : 'error',
-            htmlspecialchars($enabled ? _t('2FA 已启用') : _t('当前账号未启用 2FA'), ENT_QUOTES)
-        );
+        if ($enabled) {
+            echo '<span class="message success">' . htmlspecialchars(_t('2FA 已启用')) . '</span>';
+        } else {
+            echo '<span class="message error">' . htmlspecialchars(_t('当前账号未启用 2FA')) . '</span>';
+        }
     }
 
     // ------------------------------------------------------------------
