@@ -33,7 +33,6 @@ $gaAdminDir = __TYPECHO_ROOT_DIR__ . (defined('__TYPECHO_ADMIN_DIR__') ? __TYPEC
  * Cookie，而 header.php 一旦开始输出，就再也发不出清除该 Cookie 的响应头了。
  */
 $gaForm = GAuthenticator::setupForm();
-$gaEnabled = GAuthenticator::userIsEnabled((int) $user->uid, false);
 
 include $gaAdminDir . 'header.php';
 include $gaAdminDir . 'menu.php';
@@ -55,13 +54,13 @@ include $gaAdminDir . 'menu.php';
             <div class="col-mb-12 col-tb-8 typecho-content-panel" role="form">
                 <section>
                     <h3><?php _e('两步验证'); ?></h3>
-                    <p class="description">
-                        <?php if ($gaEnabled): ?>
-                            <?php _e('当前账号已启用两步验证。登录时在密码之后需要再输入一次验证器上的六位验证码。'); ?>
-                        <?php else: ?>
-                            <?php _e('当前账号尚未启用两步验证，目前只用密码即可登录。绑定之后会多一层保护。'); ?>
-                        <?php endif; ?>
-                    </p>
+                    <?php
+                    /**
+                     * 这里原来有一句「当前账号已/未启用两步验证」的 description。
+                     * 表单里的「当前账号 2FA」单选本身就写着同一件事，
+                     * 导航栏也常驻一个状态徽标，三处重复，删掉。
+                     */
+                    ?>
                     <?php $gaForm->render(); ?>
                 </section>
             </div>

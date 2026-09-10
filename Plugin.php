@@ -494,9 +494,15 @@ class Plugin implements PluginInterface
          * 挂在 a 上会被压成浅灰字配浅绿/浅红底，几乎看不清；
          * hover 时更是 `.typecho-head-nav a:hover{color:#fff}` 白字配浅底。
          * span 不匹配那条选择器，配色和内边距都能保持原样。
+         *
+         * 同一条规则还带着 `padding:0 20px; height:36px; line-height:36px`，
+         * 会在彩色小块外面撑出左右各 21px 的深色导航底（实测 89px 的块被套进
+         * 131px 的 a 里），看起来像给徽标加了个黑框。所以这里把 a 的盒模型清掉，
+         * 让它退化成一个只负责点击的透明外壳，彩色块自己贴满整行。
          */
         printf(
-            '<a href="%s" title="%s"><span class="message %s">%s</span></a>',
+            '<a href="%s" title="%s" style="padding:0;border:0;height:auto;line-height:inherit">'
+            . '<span class="message %s">%s</span></a>',
             htmlspecialchars(self::panelUrl(), ENT_QUOTES),
             htmlspecialchars(_t('前往 控制台 → 两步认证'), ENT_QUOTES),
             $enabled ? 'success' : 'error',
