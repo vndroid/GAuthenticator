@@ -46,14 +46,14 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
                        maxlength="11" autocomplete="one-time-code"
                        placeholder="<?php _e('六位验证码或恢复码'); ?>"/>
             </p>
+            <p class="submit">
+                <button type="submit" class="btn btn-l w-100 primary"><?php _e('验证'); ?></button>
+            </p>
             <p>
                 <label for="remember">
                     <input type="checkbox" name="remember" class="checkbox" value="1" id="remember"/>
                     <?php _e('记住本机 (一个月内免验证)'); ?>
                 </label>
-            </p>
-            <p class="submit">
-                <button type="submit" class="btn btn-l w-100 primary"><?php _e('验证'); ?></button>
             </p>
         </form>
 
