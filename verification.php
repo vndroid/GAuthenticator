@@ -52,14 +52,15 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
             <p>
                 <label for="remember">
                     <input type="checkbox" name="remember" class="checkbox" value="1" id="remember"/>
-                    <?php _e('记住本机 (一个月内免验证)'); ?>
+                    <?php _e('记住本机 (保持一个月)'); ?>
                 </label>
             </p>
         </form>
 
         <p class="more-link">
-            <?php _e('本次还可以尝试 %d 次', $remaining); ?>
-            &bull;
+            <?php _e('剩余机会 %d 次', $remaining); ?>
+        </p>
+        <p class="more-link">
             <a href="<?php echo htmlspecialchars($options->loginUrl, ENT_QUOTES, $options->charset); ?>"><?php _e('重新登录'); ?></a>
             &bull;
             <a href="<?php $options->siteUrl(); ?>"><?php _e('返回首页'); ?></a>
